@@ -303,3 +303,7 @@ python C:/PROJECTS/JARVIS/jarvis/show_model.py model.obj --label "Drone frame" [
 - **Chained requests**: "Open Blender, go to Chrome, find reference images of the Iron Man suit and model it" runs every step: a Google Images search in your Chrome, reference images loaded into Blender, a blockout-to-detail model, then a preview render and hologram. Say "in the background" to keep talking to JARVIS meanwhile.
 - **Other apps**: every MCP server in your Claude Code config (`~/.claude.json`) is available to JARVIS too (`share_claude_mcp`), so connecting an app for Claude Code connects it for JARVIS.
 - **"Watch my screen for an hour"** (or "keep an eye on the build"): JARVIS glances at the screen every couple of minutes when it changes, and immediately when an error-looking window appears (even behind other windows), and only speaks up if something is wrong. "Stop watching my screen" ends it.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
