@@ -1,0 +1,29 @@
+# --- Private: never publish -------------------------------------------------
+# Voiceprint, faceprint, memory, conversation history, logs, browser logins,
+# relay token, sentry photos, screenshots...
+data/
+# Your personal settings (name, folders, preferences)
+config.json
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+# Windows shortcuts (contain local paths)
+*.lnk
+# Test screenshots / outputs (can show your screen or face)
+tests/*.png
+tests/*.jpg
+tests/*_result.txt
+
+# --- Large or generated -----------------------------------------------------
+# Downloaded models (fetched on first run)
+models/
+.venv/
+__pycache__/
+*.pyc
+browser/node_modules/
+*.log
+*.blend
+*.blend1
