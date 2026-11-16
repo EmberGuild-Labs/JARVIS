@@ -148,6 +148,7 @@ def _menu_spec(hud, assistant, stop_tray):
         dict(title="Show memory", cb=show_memory),
         dict(title="Guest mode (1 hour)", cb=toggle_guest,
              checked=lambda: time.time() < assistant.cfg.get("_guest_until", 0)),
+        dict(title="Enroll my voice…", cb=bg(assistant.launch_enrollment)),
         dict(title="Learn my face", cb=bg(lambda: assistant.say_async(assistant.enroll_face()))),
         dict(title="Sentry photos", cb=sentry),
         dict(title="Require my voice", cb=toggle_voice_lock,
@@ -321,32 +322,68 @@ def make_menubar(hud, assistant):
     return status_item
 
 
-def _pynput_hotkey(spec: str) -> str:
-    """'ctrl+alt+j' -> '<ctrl>+<alt>+j' (pynput GlobalHotKeys syntax)."""
-    alias = {"win": "cmd", "windows": "cmd", "super": "cmd", "command": "cmd", "option": "alt",
-             "control": "ctrl", "return": "enter", "esc": "esc"}
-    parts = []
+# macOS virtual key codes (ANSI layout positions) for hotkey letters / digits / keys.
+_MAC_KEYCODES = {
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11,
+    "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
+    "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35,
+    "l": 37, "j": 38, "k": 40, "n": 45, "m": 46, "space": 49, "enter": 36, "return": 36,
+    "esc": 53, "escape": 53, "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
+    "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111}
+_MAC_MODS = {"ctrl": 1 << 18, "control": 1 << 18, "alt": 1 << 19, "option": 1 << 19, "opt": 1 << 19,
+             "shift": 1 << 17, "cmd": 1 << 20, "command": 1 << 20, "win": 1 << 20, "super": 1 << 20}
+_mac_monitors: list = []   # keep the NSEvent monitors alive
+
+
+def _parse_mac_hotkey(spec: str) -> tuple[int, int] | None:
+    """'ctrl+alt+k' -> (keycode, modifier mask)."""
+    mods, key = 0, None
     for p in spec.lower().replace(" ", "").split("+"):
-        p = alias.get(p, p)
-        parts.append(p if len(p) == 1 else f"<{p}>")
-    return "+".join(parts)
+        if p in _MAC_MODS:
+            mods |= _MAC_MODS[p]
+        else:
+            key = _MAC_KEYCODES.get(p)
+    return (key, mods) if key is not None else None
 
 
 def start_hotkey(cfg, callback, extra: dict | None = None):
-    """Global hotkeys: cfg["hotkey"] -> callback, plus {spec: callback} in extra."""
+    """Global hotkeys: cfg["hotkey"] -> callback, plus {spec: callback} in extra.
+
+    macOS: an AppKit global key monitor, installed on the main thread (call this from
+    HUD.run's on_ready). No listener thread: a second thread touching the keyboard-layout
+    API while Tk starts up makes macOS abort the process. Needs Accessibility permission."""
     log = logging.getLogger("jarvis")
     binds = {cfg["hotkey"]: callback, **{k: v for k, v in (extra or {}).items() if k}}
     if osutil.IS_MAC:
         try:
-            import Quartz
-            if hasattr(Quartz, "CGPreflightListenEventAccess") and not Quartz.CGPreflightListenEventAccess():
-                log.warning("global hotkey needs Input Monitoring permission "
-                            "(System Settings > Privacy & Security > Input Monitoring)")
-            from pynput import keyboard as pk
-            listener = pk.GlobalHotKeys({_pynput_hotkey(k): v for k, v in binds.items()})
-            listener.daemon = True
-            listener.start()
-            return listener
+            import AppKit
+            from ApplicationServices import AXIsProcessTrusted
+            if not AXIsProcessTrusted():
+                log.warning("global hotkeys need Accessibility permission "
+                            "(System Settings > Privacy & Security > Accessibility)")
+            table = {}
+            for spec, cb in binds.items():
+                parsed = _parse_mac_hotkey(spec)
+                if parsed:
+                    table[parsed] = cb
+                else:
+                    log.warning("hotkey %r not understood", spec)
+            relevant = 0
+            for m in set(_MAC_MODS.values()):
+                relevant |= m
+
+            def handler(event):
+                try:
+                    hit = table.get((int(event.keyCode()), int(event.modifierFlags()) & relevant))
+                    if hit and not event.isARepeat():
+                        threading.Thread(target=hit, daemon=True).start()
+                except Exception:
+                    log.debug("hotkey handler failed", exc_info=True)
+
+            mon = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                AppKit.NSEventMaskKeyDown, handler)
+            _mac_monitors.append(mon)
+            return mon
         except Exception as e:
             log.warning("hotkey unavailable: %s", e)
         return None
@@ -385,10 +422,14 @@ def main():
     assistant = Assistant(cfg, hud)
 
     hud.attach_typebar(assistant.submit_typed)
-    start_hotkey(cfg, assistant.trigger.set, {cfg.get("type_hotkey", ""): hud.open_typebar})
+    hotkeys = (cfg, assistant.trigger.set, {cfg.get("type_hotkey", ""): hud.open_typebar})
+    if not osutil.IS_MAC:
+        start_hotkey(*hotkeys)
 
     if osutil.IS_MAC:
-        on_ready = lambda: make_menubar(hud, assistant)   # needs the Tk root / NSApp on the main thread
+        def on_ready():   # main thread, after Tk is up: menu-bar item + hotkey monitor
+            make_menubar(hud, assistant)
+            start_hotkey(*hotkeys)
     else:
         make_tray(hud, assistant)
         on_ready = None

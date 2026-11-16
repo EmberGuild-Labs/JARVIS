@@ -730,8 +730,15 @@ class Assistant:
         self.boot()
         waiting_for_enrollment = False
         if not self.verifier.enrolled and self.cfg.get("require_voice_match", True):
-            self.launch_enrollment()
-            waiting_for_enrollment = True
+            waiting_for_enrollment = True   # voice commands stay off until there's a voiceprint
+            if self.cfg.get("auto_enroll", True):
+                self.launch_enrollment()
+            else:
+                log.info("no voiceprint; auto enrollment off - voice commands disabled until enrolled")
+                self.hud.panel("Voice not enrolled",
+                               ["Voice commands are off until you enroll.",
+                                "Type to JARVIS works meanwhile.",
+                                "Menu bar > Enroll my voice… when you're ready."], 15)
         self.rest()
         self.scheduler.start()
         from .alerts import SystemMonitor

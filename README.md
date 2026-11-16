@@ -183,6 +183,8 @@ Windows behaviour is unchanged.
 3. From the project folder, run `./setup.sh`. It creates `.venv`, installs everything and downloads the models.
 4. Start it with `.venv/bin/python run.py`. Voice enrollment starts on the first run in a Terminal window,
    or run it yourself with `.venv/bin/python -m jarvis.enroll` (`... -m jarvis.enroll test` to check it).
+   To postpone it, set `"auto_enroll": false` in `config.json`. Voice commands then stay off until you
+   enroll, Type to JARVIS still works, and **Enroll my voice…** in the menu bar starts it later.
 5. Optional: `./autostart.sh` starts JARVIS at login through a LaunchAgent
    (`~/Library/LaunchAgents/local.jarvis.assistant.plist`) and starts it now. `./autostart.sh --remove`
    turns it off. You can also use **Start at login** in the menu-bar menu, which takes effect at the next
@@ -201,13 +203,12 @@ Terminal, iTerm or your IDE. With autostart, grant it to the venv's `python` ins
 | Microphone | Wake word and voice commands |
 | Camera | Webcam presence, face ID, the sentry |
 | Screen Recording | Screenshots, "look at this", window titles, "watch my screen" |
-| Accessibility | Moving, focusing and closing windows, clicking and typing, the caret-following cursor |
-| Input Monitoring | The global `Ctrl+Option+J` push-to-talk hotkey |
+| Accessibility | Global hotkeys, moving, focusing and closing windows, clicking and typing, the caret-following cursor |
 | Automation | Spotify and Music control, hiding apps for "clear the desk" (asked on first use) |
 
 With autostart, launchd runs the venv's interpreter directly, so permissions belong to that Python
 binary, not to Terminal. Find its real path with `readlink -f .venv/bin/python` and add it under
-Accessibility and Input Monitoring with the **+** button. Microphone and Camera ask on their own.
+Accessibility with the **+** button. Microphone and Camera ask on their own.
 If the mic permission is missing, the log says "microphone is delivering silence".
 
 Without Screen Recording, window titles fall back to app names. Without Accessibility, window commands
@@ -241,7 +242,7 @@ While it's off, the push-to-talk hotkey just tells you the mic is off. The switc
 | Shell tool | PowerShell (`run_shell`) | zsh login shell (`run_shell`), with Unix risky-command checks (`sudo`, `rm -rf`, `diskutil`, `launchctl`...) |
 | Tray icon | System tray (pystray) | Menu-bar item (AppKit), same menu; no Dock icon |
 | HUD | Colour-key transparent, click-through Tk window | `systemTransparent` Tk window made click-through and floating on all Spaces via AppKit |
-| Hotkey | `keyboard` library | `pynput` (needs Input Monitoring) |
+| Hotkey | `keyboard` library | AppKit global key monitor on the main thread (needs Accessibility) |
 | Windows | Win32 (`jarvis/winfront_win.py`) | Quartz window list + Accessibility API (`jarvis/macfront.py`) |
 | Apps | Start menu apps | `.app` bundles in `/Applications`, `/System/Applications`, `~/Applications` (`open -a`) |
 | Chrome | Your Chrome profile | Same, via `open -na "Google Chrome" --args --profile-directory=...` |
@@ -271,7 +272,7 @@ While it's off, the push-to-talk hotkey just tells you the mic is off. The switc
 - Only windows on the current Space are visible to JARVIS on macOS. Full-screen browser video doesn't
   count as a game, so the HUD stays visible.
 - `requirements.txt` uses platform markers: `keyboard`, `pygetwindow` and `winrt` are Windows-only;
-  `pynput` and `pyobjc` are macOS-only.
+  `pyobjc` is macOS-only.
 - Tested on macOS 27 (Apple M3, Python 3.13): imports and the pure-logic tests, tools (shell, app launch,
   volume, screenshots), HUD rendering and click-through flags, menu-bar item, window arrange. Not yet
   tested: a full voice session end to end, multi-monitor moves, and "clear the desk".

@@ -49,6 +49,7 @@ DEFAULTS: dict = {
     "wake_speaker_threshold": 0.40,  # looser: the wake phrase is short
     "say_voice_not_recognised": True,  # speak "Voice not recognised" when a request is rejected
     "require_voice_match": True,
+    "auto_enroll": True,          # open voice enrollment on start-up when there's no voiceprint
     # Speech-to-text (faster-whisper)
     "whisper_model": "base.en",   # tiny.en is lighter, small.en is more accurate
     "unload_stt_after_idle_min": 15,

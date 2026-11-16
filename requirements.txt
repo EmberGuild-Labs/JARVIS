@@ -21,8 +21,7 @@ keyboard; sys_platform == "win32"
 pygetwindow; sys_platform == "win32"
 winrt-runtime; sys_platform == "win32"
 winrt-Windows.Media.Control; sys_platform == "win32"
-# macOS only: global hotkey, window server, Accessibility, AppKit
-pynput; sys_platform == "darwin"
+# macOS only: window server, Accessibility, AppKit (also the global hotkeys)
 pyobjc-core; sys_platform == "darwin"
 pyobjc-framework-Cocoa; sys_platform == "darwin"
 pyobjc-framework-Quartz; sys_platform == "darwin"

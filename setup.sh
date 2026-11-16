@@ -52,8 +52,7 @@ started by the autostart LaunchAgent) under System Settings > Privacy & Security
   - Microphone         (wake word and voice commands)
   - Camera             (presence detection and face ID)
   - Screen Recording   (window titles, "watch my screen", screenshots)
-  - Accessibility      (window management, global hotkey, typing and clicking)
-  - Input Monitoring   (the global push-to-talk hotkey)
+  - Accessibility      (window management, global hotkeys, typing and clicking)
   - Automation         (controlling Spotify/Music and hiding apps, asked on first use)
 
 Optional: ./autostart.sh   start JARVIS when you log in  (./autostart.sh --remove to undo)
