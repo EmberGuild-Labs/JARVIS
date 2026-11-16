@@ -10,11 +10,20 @@ pyttsx3
 mss
 pillow
 pyautogui
-pygetwindow
 pyperclip
 psutil
 pystray
-keyboard
 python-dotenv
 opencv-python-headless
 claude-agent-sdk
+# Windows only
+keyboard; sys_platform == "win32"
+pygetwindow; sys_platform == "win32"
+winrt-runtime; sys_platform == "win32"
+winrt-Windows.Media.Control; sys_platform == "win32"
+# macOS only: global hotkey, window server, Accessibility, AppKit
+pynput; sys_platform == "darwin"
+pyobjc-core; sys_platform == "darwin"
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices; sys_platform == "darwin"

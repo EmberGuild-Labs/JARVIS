@@ -1,12 +1,11 @@
 """How JARVIS voices a Claude Code relay event and collects your spoken reply."""
 from __future__ import annotations
 
-import ctypes
 import logging
 import os
 import re
-from ctypes import wintypes
 
+from . import osutil
 from .audio import chime
 from .relay import (DISMISS, RelayItem, describe_tool, match_option, permission_output,
                     project_name, question_output, stop_output, summary)
@@ -23,14 +22,9 @@ def watching_claude(idle_limit: float = 45.0) -> bool:
     """True when the Claude app is the foreground window and you've used the PC recently,
     i.e. you can already see what Claude is saying."""
     try:
-        import psutil
         from .presence import idle_seconds
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        name = os.path.basename(psutil.Process(pid.value).exe()).lower()
-        return name == "claude.exe" and idle_seconds() < idle_limit
+        # foreground_app() is "claude" on both OSes (claude.exe / Claude.app)
+        return osutil.foreground_app() == "claude" and idle_seconds() < idle_limit
     except Exception:
         return False
 

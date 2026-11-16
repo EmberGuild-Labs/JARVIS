@@ -1,10 +1,12 @@
-"""What's playing, via Windows' media session API (Spotify, browsers, media apps)."""
+"""What's playing: Windows' media session API, or Spotify / Music via AppleScript on macOS."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import threading
 import time
+
+from . import osutil
 
 log = logging.getLogger("jarvis")
 _STATUS = {0: "closed", 1: "opened", 2: "changing", 3: "stopped", 4: "playing", 5: "paused"}
@@ -26,10 +28,35 @@ async def _query() -> dict | None:
             "status": _STATUS.get(int(status), str(status))}
 
 
+def _mac_now_playing() -> dict | None:
+    """Spotify or Music via AppleScript; only asks apps that are already running."""
+    sep = "\u241f"
+    for app, state_word in (("Spotify", "player state"), ("Music", "player state")):
+        if osutil.osascript(f'application "{app}" is running') != "true":
+            continue
+        script = (f'tell application "{app}"\n'
+                  f'  set st to (get {state_word}) as text\n'
+                  f'  if st is "stopped" then return st\n'
+                  f'  set t to current track\n'
+                  f'  return st & "{sep}" & (name of t) & "{sep}" & (artist of t) & "{sep}" & (album of t)\n'
+                  f'end tell')
+        out = osutil.osascript(script)
+        if not out or out == "stopped":
+            continue
+        st, _, rest = out.partition(sep)
+        parts = rest.split(sep) + ["", "", ""]
+        if st == "paused" or st == "playing":
+            return {"title": parts[0], "artist": parts[1], "album": parts[2],
+                    "app": app, "status": st}
+    return None
+
+
 def now_playing(timeout: float = 4.0) -> dict | None:
     """Query on a fresh multi-threaded-apartment thread (the media API rejects calls
     from single-threaded COM apartments such as the Tk/main thread)."""
     global _busy
+    if osutil.IS_MAC:
+        return _mac_now_playing()
     if _busy is not None and _busy.is_alive():  # previous query still stuck (e.g. PC locked)
         return None
     out: dict = {}

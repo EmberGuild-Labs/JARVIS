@@ -1,6 +1,6 @@
 """Send a 3D model to JARVIS's HUD as a rotating hologram.
 
-    python C:/PROJECTS/JARVIS/jarvis/show_model.py MODEL [--label NAME] [--seconds N]
+    python /path/to/JARVIS/jarvis/show_model.py MODEL [--label NAME] [--seconds N]
                                                   [--mode auto|full|side] [--summary TEXT]
 
 MODEL: .obj, .stl (ASCII or binary) or .json {"verts": [[x,y,z]...], "edges": [[i,j]...]}.

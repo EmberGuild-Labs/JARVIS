@@ -4,13 +4,16 @@ Claude Code then sends JARVIS: turn-finished updates (Stop), Claude's questions
 (AskUserQuestion) and permission prompts (PermissionRequest). Other settings are kept.
 """
 import json
+import shlex
 import shutil
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SETTINGS = Path.home() / ".claude" / "settings.json"
-PY = str((ROOT / ".venv" / "Scripts" / "python.exe")).replace("\\", "/")
+# Windows keeps the exec form (command + args). On macOS the hook is one shell command
+# line, with each path quoted because the repo path may contain spaces.
+PY = str(ROOT / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")).replace("\\", "/")
 HOOK = str(ROOT / "jarvis" / "cc_hook.py").replace("\\", "/")
 EVENTS = {"Stop": None, "PreToolUse": "AskUserQuestion", "PermissionRequest": None}
 
@@ -29,7 +32,9 @@ def main():
     for ev, matcher in EVENTS.items():
         lst = [e for e in hooks.get(ev, []) if not is_ours(e)]
         if not remove:
-            entry = {"hooks": [{"type": "command", "command": PY, "args": [HOOK], "timeout": 70,
+            cmd = ({"command": PY, "args": [HOOK]} if sys.platform == "win32"
+                   else {"command": f"{shlex.quote(PY)} {shlex.quote(HOOK)}"})
+            entry = {"hooks": [{"type": "command", **cmd, "timeout": 70,
                                 "statusMessage": "Checking with JARVIS"}]}
             if matcher:
                 entry = {"matcher": matcher, **entry}

@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .audio import SAMPLE_RATE, Player
+from . import osutil
 from .config import MODELS_DIR, VOICEPRINT_PATH
 
 log = logging.getLogger("jarvis")
@@ -258,12 +259,13 @@ class SpeakerVerifier:
 
 # ---------------------------------------------------------------- text-to-speech
 class TextToSpeech:
-    """Neural voice via edge-tts (online); falls back to the offline Windows
-    voice (pyttsx3) when there's no connection."""
+    """Neural voice via edge-tts (online); falls back to the offline system
+    voice (pyttsx3 / SAPI on Windows, the `say` command on macOS) when there's no connection."""
 
     def __init__(self, voice: str, rate: str, player: Player):
         self.voice, self.rate, self.player = voice, rate, player
         self._loop = asyncio.new_event_loop()
+        self._say_proc = None
 
     def _synth_edge(self, text: str) -> tuple[np.ndarray, int]:
         import edge_tts
@@ -290,7 +292,12 @@ class TextToSpeech:
             return ("offline", text)
 
     def _play(self, item):
-        if isinstance(item[0], str) and item[0] == "offline":
+        if isinstance(item[0], str) and item[0] == "offline" and osutil.IS_MAC:
+            # pyttsx3's NSSpeechSynthesizer needs the main run loop; `say` works from any thread
+            import subprocess
+            self._say_proc = subprocess.Popen(["say", "--", item[1]])
+            self._say_proc.wait()
+        elif isinstance(item[0], str) and item[0] == "offline":
             import pyttsx3
             eng = pyttsx3.init()
             eng.say(item[1])
@@ -310,6 +317,9 @@ class TextToSpeech:
 
     def stop(self):
         self.player.stop()
+        proc = self._say_proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?;:])\s+(?=[A-Z0-9\"'(])")

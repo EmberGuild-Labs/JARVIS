@@ -15,6 +15,7 @@ from jarvis.tools import RISKY, ToolBox
 
 print("fallbacks param:", "fallbacks" in inspect.signature(BetaMessages.create).parameters)
 assert RISKY.search("Remove-Item foo") and not RISKY.search("Get-ChildItem C:\\")
+assert RISKY.search("sudo rm -rf /") and RISKY.search("killall Finder") and not RISKY.search("ls -la ~/Documents")
 
 cfg = dict(DEFAULTS)
 hud = HUD(cfg)
@@ -25,10 +26,13 @@ def script():
     time.sleep(1)
     print(tb.run("system_status", {})[0])
     print("windows:", len(tb.run("list_windows", {})[0].splitlines()))
-    shot, err = tb.run("take_screenshot", {})
+    shot, err = tb.run("take_screenshot", {"monitor": 1})
     print("screenshot:", shot[0]["text"] if not err else shot)
-    print(tb.run("run_powershell", {"command": "Remove-Item C:\\nope", "reason": "test"})[0])
-    print(tb.run("run_powershell", {"command": "(Get-Date).Year", "reason": "test"})[0])
+    from jarvis import osutil
+    risky, safe = (("rm -rf /tmp/nope", "date +%Y") if osutil.IS_MAC
+                   else ("Remove-Item C:\\nope", "(Get-Date).Year"))
+    print(tb.run("run_shell", {"command": risky, "reason": "test"})[0])
+    print(tb.run("run_shell", {"command": safe, "reason": "test"})[0])
     hud.set_state("listening"); hud.set_level(0.6); time.sleep(1)
     hud.heard("What's using all my RAM?")
     hud.set_state("thinking"); hud.status("SYSTEM STATUS"); time.sleep(1.5)

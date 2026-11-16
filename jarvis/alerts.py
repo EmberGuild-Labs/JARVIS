@@ -1,6 +1,6 @@
 """Background health checks that speak up when something needs attention.
 
-One pass a minute (a few ms of CPU): GPU temperature (nvidia-smi), sustained CPU
+One pass a minute (a few ms of CPU): GPU temperature (NVIDIA only, via nvidia-smi; skipped on macOS), sustained CPU
 load, RAM pressure, a single process hogging memory, low disk space, and finished
 downloads. Each alert type has a cooldown so it never nags.
 """
@@ -16,6 +16,8 @@ from pathlib import Path
 
 import psutil
 
+from . import osutil
+
 log = logging.getLogger("jarvis")
 
 PARTIAL = (".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload")
@@ -28,7 +30,7 @@ class SystemMonitor:
         self.last: dict[str, float] = {}
         self.cpu_high = 0
         self.ram_high = 0
-        self.nvsmi = shutil.which("nvidia-smi")
+        self.nvsmi = (None if osutil.IS_MAC else shutil.which("nvidia-smi"))
         self.downloads = Path.home() / "Downloads"
         self.seen = self._snapshot()
         self.net_down, self.net_lost, self.hung = 0, False, 0
@@ -64,7 +66,7 @@ class SystemMonitor:
                     [self.nvsmi, "--query-gpu=temperature.gpu,utilization.gpu,name",
                      "--format=csv,noheader,nounits"],
                     capture_output=True, text=True, timeout=5,
-                    creationflags=subprocess.CREATE_NO_WINDOW).stdout.strip().splitlines()
+                    **osutil.no_window()).stdout.strip().splitlines()
                 if out:
                     temp, util, name = [x.strip() for x in out[0].split(",", 2)]
                     if int(temp) >= c.get("alert_gpu_temp", 85):
@@ -97,12 +99,12 @@ class SystemMonitor:
                        [f"{name}: {gb:.1f} GB"])
 
         # Disk space (system drive), at most twice a day
-        drive = os.environ.get("SystemDrive", "C:") + "\\"
+        drive = osutil.SYSTEM_DRIVE
         du = psutil.disk_usage(drive)
         free_gb = du.free / 2**30
         if free_gb < c.get("alert_disk_free_gb", 20) or du.percent >= 95:
             self._fire("disk", 720, "Disk space",
-                       f"Your {drive[0]} drive is getting full: {free_gb:.0f} gigabytes left.",
+                       f"Your {'startup disk' if osutil.IS_MAC else drive[0] + ' drive'} is getting full: {free_gb:.0f} gigabytes left.",
                        [f"{drive} {du.percent:.0f}% used, {free_gb:.0f} GB free"])
 
         # Battery (laptops): low, then critical
@@ -156,6 +158,8 @@ class SystemMonitor:
 
     @staticmethod
     def _hung_foreground() -> str:
+        if not osutil.IS_WIN:
+            return ""   # no cheap "not responding" probe on macOS
         import ctypes
         from ctypes import wintypes
         u = ctypes.windll.user32

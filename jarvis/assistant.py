@@ -16,6 +16,7 @@ import time
 
 import numpy as np
 
+from . import osutil
 from .audio import SAMPLE_RATE, Microphone, Player, chime, record_utterance
 from .brain import Brain
 from .config import DATA_DIR
@@ -617,7 +618,7 @@ class Assistant:
             mic = sd.query_devices(kind="input")["name"][:28]
         except Exception:
             mic = "default"
-        du = psutil.disk_usage("C:\\")
+        du = psutil.disk_usage(osutil.SYSTEM_DRIVE)
         backend = "Claude Code" if self.cfg.get("backend", "claude_code") != "api" else "Claude API"
         cli_ok = getattr(self.brain, "cli", True) is not None
         n_sched = len(self.scheduler.tasks)
@@ -630,7 +631,8 @@ class Assistant:
             ("Model routing: Haiku / Sonnet / Opus", True),
             (f"Scheduler: {n_sched} task{'s' if n_sched != 1 else ''}", True),
             (f"Storage: {du.free / 2**30:.0f} GB free", du.free / 2**30 >= self.cfg.get("alert_disk_free_gb", 20)),
-            ("BeamNG link: " + ("online" if beamng_running(self.cfg) else "standby"), True),
+            *([] if osutil.IS_MAC else
+              [("BeamNG link: " + ("online" if beamng_running(self.cfg) else "standby"), True)]),
             ("Presence sensor: " + ("scanning for webcam" if self.cfg.get("presence_enabled", True)
                                     else "off"), True),
         ]
@@ -782,19 +784,12 @@ class Assistant:
 
     def launch_enrollment(self):
         """Open the guided voice enrollment in its own console window."""
-        import subprocess
-        import sys
-        from pathlib import Path
         from .config import ROOT
-        exe = Path(sys.executable)
-        if exe.name.lower() == "pythonw.exe":
-            exe = exe.with_name("python.exe")
         if enrollment_running():  # a window is already open: don't start a second one
             log.info("enrollment already running")
             return
         try:
-            subprocess.Popen([str(exe), "-m", "jarvis.enroll"], cwd=str(ROOT),
-                             creationflags=subprocess.CREATE_NEW_CONSOLE)
+            osutil.open_in_console([osutil.python_exe(), "-m", "jarvis.enroll"], cwd=str(ROOT))
             self.say("Hello. Before I take orders, I need to learn your voice. "
                      "I've opened a window with a few phrases to read. I'll guide you through it.")
         except Exception:

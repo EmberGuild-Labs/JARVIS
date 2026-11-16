@@ -57,6 +57,7 @@ from claude_agent_sdk import (
     tool,
 )
 
+from . import osutil
 from .tools import RISKY, TOOL_DEFS, ToolBox, load_memory
 
 log = logging.getLogger("jarvis")
@@ -76,14 +77,14 @@ def beamng_running(cfg: dict) -> bool:
         return False
 
 # Claude Code has its own shell and file tools, so these JARVIS tools are skipped.
-SKIP = {"run_powershell", "read_file", "write_file"}
+SKIP = {"run_shell", "read_file", "write_file"}
 SAFE_BUILTINS = ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "TodoWrite"]
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
 PERSONA = """
 # You are JARVIS
-You are also JARVIS, a voice-driven AI assistant on {user}'s Windows PC: calm, precise, \
+You are also JARVIS, a voice-driven AI assistant on {user}'s {os_name} computer: calm, precise, \
 courteous, with a slightly dry British manner and an occasional understated wit. Address \
 the user as "{user}". The user is talking to you by voice; their words are transcribed \
 by speech recognition, which can mishear, so interpret charitably.
@@ -166,7 +167,7 @@ test what you build), then speak a one-sentence summary and put the details on t
 check..." -> schedule_task with a local ISO time computed from the current date/time in \
 the request (use repeat for recurring). Confirm the time back in words, in 24-hour form \
 ("seventeen hundred today"); the user uses 24-hour time everywhere. list_scheduled / cancel_scheduled for "what's scheduled" and "cancel the...". \
-Use Windows Task Scheduler only if the user explicitly asks for something to run while \
+Use {scheduler_name} only if the user explicitly asks for something to run while \
 JARVIS is off.
 - Risky shell commands and writes outside {code_dir} are confirmed with the user by \
 voice automatically; if they decline, accept it and don't route around it.
@@ -200,7 +201,7 @@ reading it is fine too.
 - Diagnostics: run_diagnostic for "run a diagnostic" / "system check"; then speak a \
 one-line verdict that leads with anything that needs attention.
 - Timers show as countdown rings on the HUD; set_timer for "twenty minutes for the pizza".
-- Windows: arrange_windows for "put Chrome on the left and Code on the right" \
+- Window layout: arrange_windows for "put Chrome on the left and Code on the right" \
 (side_by_side), "send this to the other monitor" (next_monitor), "clear the desk".
 - Blender co-pilot: you control Blender through the mcp__blender__* tools (they work once \
 Blender is open: call open_blender first, which launches it if needed and waits until it's \
@@ -230,18 +231,18 @@ export it for show_wireframe (below) and put the hologram up, and bring Blender 
 use start_background_task with these full instructions instead (background tasks have the \
 Blender and browser tools too) and stay available.
 - KiCad (9.0, "keycard" is a mishearing): design boards by script, not by clicking. Tools: \
-"C:/Program Files/KiCad/9.0/bin/python.exe" has the pcbnew module (create the board, \
+"{kicad_python}" has the pcbnew module (create the board, \
 outline on Edge.Cuts, load footprints with pcbnew.FootprintLoad from \
-C:/Program Files/KiCad/9.0/share/kicad/footprints/<lib>.pretty, assign nets, place, add \
+{kicad_footprints}/<lib>.pretty, assign nets, place, add \
 tracks/vias, zones for GND pours, then refill zones with pcbnew.ZONE_FILLER and save). \
-"C:/Program Files/KiCad/9.0/bin/kicad-cli.exe": `pcb drc --exit-code-violations -o drc.rpt` \
+"{kicad_cli}": `pcb drc --exit-code-violations -o drc.rpt` \
 (iterate until 0 errors and 0 unconnected), `pcb render --side top --quality high -o \
 board.png` (show_image it), `pcb export stl` (show_wireframe it for the hologram), \
 `pcb export gerbers` + `pcb export drill` (zip them for ordering). Put each board in its \
 own project folder under the projects folder with a .kicad_pro, write the design as a \
 re-runnable Python script, keep nets and parts in a clear table in the script, and finish \
 by opening the .kicad_pcb in KiCad (open_application with the file isn't possible: use \
-start_process via Bash `start "" "<path>.kicad_pcb"`). A schematic is optional; say so if \
+{open_cmd}). A schematic is optional; say so if \
 you skipped it. There is no autorouter: route by computing track paths yourself on a grid, \
 keep it 2-layer, 0.25 mm signal / 0.5 mm power tracks unless told otherwise.
 - Watch my screen: watch_screen(minutes, focus) for "watch my screen", "keep an eye on the \
@@ -265,15 +266,36 @@ A .obj file path works directly without Blender.
 download finishes".
 {memory}"""
 
+def _kicad_paths() -> dict:
+    if osutil.IS_MAC:
+        app = "/Applications/KiCad/KiCad.app/Contents"
+        return {"kicad_python": app + "/Frameworks/Python.framework/Versions/Current/bin/python3",
+                "kicad_cli": app + "/MacOS/kicad-cli",
+                "kicad_footprints": app + "/SharedSupport/footprints",
+                "open_cmd": "Bash `open \"<path>.kicad_pcb\"`"}
+    return {"kicad_python": "C:/Program Files/KiCad/9.0/bin/python.exe",
+            "kicad_cli": "C:/Program Files/KiCad/9.0/bin/kicad-cli.exe",
+            "kicad_footprints": "C:/Program Files/KiCad/9.0/share/kicad/footprints",
+            "open_cmd": "start_process via Bash `start \"\" \"<path>.kicad_pcb\"`"}
+
+
+def _os_notes() -> str:
+    if osutil.IS_MAC:
+        return ("\n## macOS notes\nShortcuts use cmd, not ctrl (press_keys 'cmd+c', 'cmd+space'); "
+                "there is no Windows key. Apps are .app bundles: open them with open_application "
+                "or `open -a`. run_shell is zsh, not PowerShell; use `open` to open files, "
+                "`osascript` for AppleScript.\n")
+    return ""
+
+
 def active_monitor_note() -> str:
     """' on screen 2' when the active window is on a secondary monitor (for screen questions)."""
     try:
-        import ctypes
-        from ctypes import wintypes
         import mss
-        r = wintypes.RECT()
-        ctypes.windll.user32.GetWindowRect(ctypes.windll.user32.GetForegroundWindow(), ctypes.byref(r))
-        cx, cy = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+        rect = osutil.foreground_rect()
+        if not rect:
+            return ""
+        cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
         with mss.MSS() as m:
             mons = m.monitors
         if len(mons) <= 2:
@@ -310,9 +332,9 @@ def personality_note(cfg: dict) -> str:
     return note
 
 
-ROUTER_PROMPT = """You route requests for a voice assistant that controls a Windows PC. \
+ROUTER_PROMPT = f"""You route requests for a voice assistant that controls a {osutil.OS_NAME} computer. \
 For each message you get a conversation excerpt (possibly empty) and a new request. \
-Answer with only JSON, like {"continues": false, "tier": "simple"}.
+Answer with only JSON, like {{"continues": false, "tier": "simple"}}.
 
 continues: true if the request continues the conversation (follow-up, refers back with \
 it/that/them/again, corrects or refines, same subject); false if it starts something \
@@ -458,7 +480,9 @@ class CodeBrain:
         mem_txt = ("\n## What you know about the user\n" + "\n".join(f"- {m}" for m in mem)) if mem else ""
         from .config import ROOT
         text = PERSONA.format(user=self.cfg.get("user_name", "sir"), code_dir=self.code_dir,
-                              memory=mem_txt, root=ROOT.as_posix()) + personality_note(self.cfg)
+                              memory=mem_txt, root=ROOT.as_posix(), os_name=osutil.OS_NAME,
+                              scheduler_name="launchd / cron" if osutil.IS_MAC else "Windows Task Scheduler",
+                              **_kicad_paths()) + _os_notes() + personality_note(self.cfg)
         if model != self.models["coding"] and self.cfg.get("auto_escalate", True):
             text += ESCALATION_NOTE.format(model=self.short(model).capitalize())
         return {"type": "preset", "preset": "claude_code", "append": text}
@@ -797,11 +821,7 @@ class CodeBrain:
                 on_status("NEW TOPIC")
             self.reset()
         self.last_active = time.time()
-        try:
-            import pygetwindow as gw
-            active = gw.getActiveWindowTitle() or "unknown"
-        except Exception:
-            active = "unknown"
+        active = osutil.foreground_title() or "unknown"
         now = dt.datetime.now().strftime("%A %d %B %Y, %H:%M")
         prompt = f"[{now} | active window: {active}{active_monitor_note()}] {text}"
         try:

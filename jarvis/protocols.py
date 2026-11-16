@@ -9,7 +9,7 @@ music and opens Netflix"). Step types:
   {"open_url": "https://..."}          open a website
   {"close": ["Discord", "Slack"]}      ask these windows to close (apps may ask to save)
   {"minimize_all": true}               show the desktop
-  {"power_plan": "high"}               high | balanced | saver
+  {"power_plan": "high"}               high | balanced | saver (Windows only; no-op on macOS)
   {"volume": -10}                      volume steps (~2% each); {"volume": "mute"}
   {"media": "play_pause"}              play_pause | pause | next | previous
   {"mode": "game"}                     game | focus | normal | standby (see below)
@@ -28,6 +28,7 @@ import re
 import subprocess
 import time
 
+from . import osutil
 from .config import DATA_DIR
 
 log = logging.getLogger("jarvis")
@@ -148,6 +149,9 @@ class ProtocolRunner:
         if kind == "say":
             a.say(val)
         elif kind == "launch":
+            if osutil.IS_MAC and "beamng" in str(val).lower():
+                log.info("protocol: BeamNG isn't available on macOS; skipping launch")
+                return "BeamNG skipped (not on macOS)"
             if "beamng" in str(val).lower():
                 tb.run("launch_beamng", {})
             else:
@@ -161,16 +165,30 @@ class ProtocolRunner:
                 tb.run("window_action", {"title": title, "action": "close"})
             return f"closed {', '.join(val)}"
         elif kind == "minimize_all":
-            import pyautogui
-            pyautogui.hotkey("winleft", "d")
+            if osutil.IS_MAC:   # hide every visible app (needs the Automation permission)
+                osutil.osascript('tell application "System Events" to set visible of every process '
+                                 'whose visible is true and background only is false to false')
+            else:
+                import pyautogui
+                pyautogui.hotkey("winleft", "d")
             return "desktop shown"
         elif kind == "power_plan":
+            if not osutil.IS_WIN:   # pmset needs sudo; leave the Mac's power settings alone
+                log.info("protocol: power plan %r is Windows-only, skipping on %s", val, osutil.OS_NAME)
+                return ""
             scheme = POWER_PLANS.get(str(val).lower())
             if scheme:
                 subprocess.run(["powercfg", "/setactive", scheme], capture_output=True,
-                               creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
+                               timeout=10, **osutil.no_window())
                 return f"power plan {val}"
         elif kind == "volume":
+            if osutil.IS_MAC:
+                if val == "mute":   # set (not toggle) mute
+                    osutil.osascript("set volume output muted true")
+                else:
+                    n = int(val)
+                    osutil.media_control("volume_up" if n > 0 else "volume_down", abs(n))
+                return f"volume {val}"
             if val == "mute":
                 tb.run("media_control", {"action": "mute", "steps": 1})
             else:
@@ -180,6 +198,12 @@ class ProtocolRunner:
             return f"volume {val}"
         elif kind == "media":
             action = "play_pause" if val in ("pause", "play") else val
+            if osutil.IS_MAC:
+                if val == "pause":
+                    osutil.pause_media()   # real pause, never a toggle
+                else:
+                    osutil.media_control(action)
+                return f"media {val}"
             if val == "pause":
                 from .media import now_playing
                 info = now_playing(timeout=2)

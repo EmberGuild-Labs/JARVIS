@@ -17,6 +17,7 @@ from pathlib import Path
 
 import psutil
 
+from . import osutil
 from .config import MEMORY_PATH
 
 log = logging.getLogger("jarvis")
@@ -27,7 +28,13 @@ RISKY = re.compile(
     r"stop-computer|reg(\.exe)?\s+(add|delete)|set-itemproperty|remove-itemproperty|"
     r"new-itemproperty|bcdedit|cipher|takeown|icacls|set-executionpolicy|stop-process|"
     r"taskkill|uninstall|clear-content|move-item|invoke-webrequest|iwr|curl|wget|"
-    r"start-bitstransfer|set-mppreference|netsh|net\s+user|schtasks|sc(\.exe)?\s+(delete|config))\b",
+    r"start-bitstransfer|set-mppreference|netsh|net\s+user|schtasks|sc(\.exe)?\s+(delete|config)|"
+    # macOS / Unix
+    r"sudo|su|doas|diskutil|hdiutil|halt|reboot|poweroff|launchctl|defaults\s+(write|delete|import)|"
+    r"csrutil|kill|killall|pkill|chmod|chown|chgrp|chflags|mv|dd|mkfs|crontab|networksetup|"
+    r"pmset|softwareupdate|spctl|tmutil|systemsetup|dscl|sysadminctl|trash|shred|truncate|"
+    r"do\s+shell\s+script|security\s+(delete|add)|xattr)\b|"
+    r"\|\s*(ba|z)?sh\b|>\s*/(etc|usr|System|Library|private|var)\b",
     re.I,
 )
 
@@ -38,8 +45,8 @@ def _schema(props: dict, required: list[str]) -> dict:
 
 
 TOOL_DEFS = [
-    {"name": "run_powershell",
-     "description": "Run a PowerShell command on the user's Windows PC and return its output. "
+    {"name": "run_shell",
+     "description": f"Run a {osutil.SHELL_NAME} command on the user's {osutil.OS_NAME} computer and return its output. "
                     "Use for anything not covered by a more specific tool (file search, settings "
                     "queries, launching things with arguments, etc.). Destructive commands "
                     "require spoken confirmation from the user, which this tool handles itself.",
@@ -95,7 +102,9 @@ TOOL_DEFS = [
      "description": "Type text with the keyboard into the focused window.",
      "input_schema": _schema({"text": {"type": "string"}}, ["text"])},
     {"name": "press_keys",
-     "description": "Press a key or chord, e.g. 'enter', 'ctrl+c', 'alt+tab', 'win+d'.",
+     "description": ("Press a key or chord, e.g. 'enter', 'cmd+c', 'cmd+tab', 'cmd+space'. "
+                     "cmd is the Command key." if osutil.IS_MAC else
+                     "Press a key or chord, e.g. 'enter', 'ctrl+c', 'alt+tab', 'win+d'."),
      "input_schema": _schema({"keys": {"type": "string"}}, ["keys"])},
     {"name": "scroll",
      "description": "Scroll the mouse wheel. Positive = up, negative = down.",
@@ -168,7 +177,8 @@ TOOL_DEFS = [
      "input_schema": _schema({}, [])},
     {"name": "launch_beamng",
      "description": "Launch BeamNG.drive with its MCP server enabled (-enablemcp) so you can control "
-                    "the game. Takes about a minute to come up.",
+                    "the game. Takes about a minute to come up."
+                    + (" (Not available on macOS: BeamNG.drive has no Mac build.)" if osutil.IS_MAC else ""),
      "input_schema": _schema({}, [])},
     {"name": "start_background_task",
      "description": "Run a longer job in the background (its own Claude session) so the user can "
@@ -249,9 +259,9 @@ TOOL_DEFS = [
                              ["humour", "length", "address_as"])},
     {"name": "run_diagnostic",
      "description": "Full system diagnostic with a HUD scan animation: CPU/GPU temperature and "
-                    "load, RAM, every drive's free space, battery, pending Windows updates, "
+                    "load, RAM, every drive's free space, battery, pending OS updates, "
                     "devices with driver problems, uptime. For 'run a diagnostic', 'system check', "
-                    "'how's my PC doing'. Speak a one-line verdict afterwards.",
+                    "'how's my computer doing'. Speak a one-line verdict afterwards.",
      "input_schema": _schema({}, [])},
     {"name": "arrange_windows",
      "description": "Arrange windows by voice. action: left (snap to left half), right, top, "
@@ -312,6 +322,12 @@ NOTES_PATH = Path.home() / "Documents" / "JARVIS Notes.md"
 
 
 def find_chrome() -> str | None:
+    if osutil.IS_MAC:
+        for d in (Path("/Applications"), Path.home() / "Applications"):
+            app = d / "Google Chrome.app"
+            if app.exists():
+                return str(app)
+        return None
     for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
                  os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
                  os.environ.get("LOCALAPPDATA", "")):
@@ -327,7 +343,10 @@ def chrome_profile(cfg: dict) -> str | None:
     if cfg.get("chrome_profile"):
         return cfg["chrome_profile"]
     try:
-        local = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
+        if osutil.IS_MAC:
+            local = Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Local State"
+        else:
+            local = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
         prof = json.loads(local.read_text(encoding="utf-8")).get("profile", {})
         return prof.get("last_used") or "Default"
     except Exception:
@@ -335,7 +354,9 @@ def chrome_profile(cfg: dict) -> str | None:
 
 
 def find_beamng() -> Path | None:
-    """Locate BeamNG.drive.exe in the Steam libraries."""
+    """Locate BeamNG.drive.exe in the Steam libraries (Windows only; there is no Mac build)."""
+    if not osutil.IS_WIN:
+        return None
     roots = [Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Steam"]
     lib = roots[0] / "steamapps" / "libraryfolders.vdf"
     try:
@@ -368,6 +389,7 @@ class ToolBox:
         self.scheduler = None  # set by the assistant
         self.dictation_requested = False
         self.shot_origin = (0, 0)
+        self._backing = 1.0   # screenshot pixels per screen point (2.0 on Retina Macs)
         self.bg = None  # background-task runner (Claude Code backend)
         self.protocols = None
         self.face_enroll = None
@@ -395,7 +417,14 @@ class ToolBox:
 
     @staticmethod
     def _caret_or_mouse() -> tuple[int, int]:
-        """Text caret position in the focused window if Windows knows it, else the mouse."""
+        """Text caret position in the focused window if the OS knows it, else the mouse."""
+        if osutil.IS_MAC:
+            pos = _mac_caret()
+            if pos:
+                return pos
+            import pyautogui
+            p = pyautogui.position()
+            return p.x, p.y
         import ctypes
         from ctypes import wintypes
 
@@ -424,21 +453,20 @@ class ToolBox:
         return self.confirm(question)
 
     # ------------------------------------------------------------------- tools
-    def t_run_powershell(self, command: str, reason: str):
+    def t_run_shell(self, command: str, reason: str):
         if RISKY.search(command) and not self._ok(f"{reason} Shall I proceed?"):
             return "User declined; command not run."
         self.hud.status(f"> {command[:90]}")
-        p = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True, text=True, timeout=120,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        p = osutil.run_shell(command, timeout=120)
         out = (p.stdout + ("\nSTDERR:\n" + p.stderr if p.stderr.strip() else "")).strip()
         return f"exit {p.returncode}\n{out[:8000] or '(no output)'}"
 
     def _scan_apps(self) -> dict[str, str]:
         if self._apps is not None and time.time() - getattr(self, "_apps_t", 0) > 600:
             self._apps = None   # rescan now and then, so newly installed apps are found
+        if self._apps is None and osutil.IS_MAC:
+            self._apps_t = time.time()
+            self._apps = _scan_mac_apps()
         if self._apps is None:
             self._apps_t = time.time()
             apps = {}
@@ -454,7 +482,7 @@ class ToolBox:
                 out = subprocess.run(["powershell", "-NoProfile", "-Command",
                                       "Get-StartApps | ForEach-Object { $_.Name + '|' + $_.AppID }"],
                                      capture_output=True, text=True, timeout=20,
-                                     creationflags=subprocess.CREATE_NO_WINDOW).stdout
+                                     **osutil.no_window()).stdout
                 for ln in out.splitlines():
                     name, _, appid = ln.partition("|")
                     if name.strip() and "!" in appid:
@@ -479,11 +507,25 @@ class ToolBox:
     def t_open_application(self, name: str, background: bool = False):
         from .winfront import windows
         before = set(windows())
-        res = self._open_application(name)
+        res = self._open_application(name, background)
         return res + (self._front(before, hint=name, background=background)
                       if res.startswith("Launched") or "Start-Process" in res else "")
 
-    BUILTIN_APPS = {"calculator": "calc.exe", "calc": "calc.exe", "notepad": "notepad.exe",
+    _MAC_BUILTIN = {"calculator": "Calculator", "calc": "Calculator", "notes": "Notes",
+                    "notepad": "TextEdit", "textedit": "TextEdit", "text edit": "TextEdit",
+                    "paint": "Preview", "preview": "Preview", "settings": "System Settings",
+                    "system settings": "System Settings", "system preferences": "System Settings",
+                    "windows settings": "System Settings", "control panel": "System Settings",
+                    "task manager": "Activity Monitor", "activity monitor": "Activity Monitor",
+                    "file explorer": "Finder", "explorer": "Finder", "finder": "Finder",
+                    "snipping tool": "Screenshot", "screenshot": "Screenshot", "camera": "Photo Booth",
+                    "clock": "Clock", "command prompt": "Terminal", "terminal": "Terminal",
+                    "windows terminal": "Terminal", "safari": "Safari", "chrome": "chrome",
+                    "google chrome": "chrome", "app store": "App Store", "music": "Music",
+                    "messages": "Messages", "facetime": "FaceTime", "maps": "Maps",
+                    "reminders": "Reminders", "calendar": "Calendar", "photos": "Photos"}
+
+    _WIN_BUILTIN = {"calculator": "calc.exe", "calc": "calc.exe", "notepad": "notepad.exe",
                     "paint": "mspaint.exe", "settings": "ms-settings:", "windows settings": "ms-settings:",
                     "task manager": "taskmgr.exe", "file explorer": "explorer.exe",
                     "explorer": "explorer.exe", "snipping tool": "ms-screenclip:",
@@ -491,6 +533,7 @@ class ToolBox:
                     "control panel": "control.exe", "command prompt": "cmd.exe",
                     "terminal": "wt.exe", "windows terminal": "wt.exe", "chrome": "chrome",
                     "google chrome": "chrome"}
+    BUILTIN_APPS = _MAC_BUILTIN if osutil.IS_MAC else _WIN_BUILTIN
 
     DOMAIN = re.compile(r"^(https?://)?([a-z0-9-]+\.)+(com|net|org|io|ai|dev|gg|tv|co|uk|de|se|"
                         r"edu|gov|app|me|us|ca|info|xyz|store|shop|news|blog|tech)(/\S*)?$", re.I)
@@ -547,7 +590,9 @@ class ToolBox:
         "disney plus": "disneyplus.com", "outlook": "outlook.live.com", "canvas": "canvas.instructure.com",
     }
 
-    def _open_application(self, name: str):
+    def _open_application(self, name: str, background: bool = False):
+        if osutil.IS_MAC:
+            return self._open_application_mac(name, background)
         apps = self._scan_apps()
         key = name.lower().strip()
         if key in self.BUILTIN_APPS:   # Windows' own apps aren't Start Menu shortcuts
@@ -556,7 +601,7 @@ class ToolBox:
                 chrome = find_chrome()
                 subprocess.Popen([chrome, f"--profile-directory={chrome_profile(self.cfg)}"])
             else:
-                os.startfile(target)
+                osutil.open_path(target)
             return f"Launched '{key}'."
         match = next((k for k in apps if k == key), None) or \
             next((k for k in apps if key in k), None)
@@ -564,12 +609,38 @@ class ToolBox:
             close = difflib.get_close_matches(key, apps.keys(), n=1, cutoff=0.55)
             match = close[0] if close else None
         if match:
-            os.startfile(apps[match])
+            osutil.open_path(apps[match])
             return f"Launched '{match}'."
         # fall back to App Paths / PATH / UWP protocol names
         subprocess.Popen(["powershell", "-NoProfile", "-Command", f"Start-Process '{name}'"],
-                         creationflags=subprocess.CREATE_NO_WINDOW)
+                         **osutil.no_window())
         return f"No Start Menu match; tried Start-Process '{name}'."
+
+    def _open_application_mac(self, name: str, background: bool = False):
+        key = name.lower().strip()
+        g = ["-g"] if background else []
+        target = self.BUILTIN_APPS.get(key)
+        if target == "chrome":
+            chrome = find_chrome()
+            if not chrome:
+                return "Google Chrome isn't installed."
+            subprocess.Popen(["open", "-na", "Google Chrome", *g, "--args",
+                              f"--profile-directory={chrome_profile(self.cfg)}"])
+            return "Launched 'chrome'."
+        if target:
+            subprocess.Popen(["open", *g, "-a", target])
+            return f"Launched '{key}'."
+        apps = self._scan_apps()
+        match = next((k for k in apps if k == key), None) or \
+            next((k for k in apps if k.startswith(key)), None) or \
+            next((k for k in apps if key in k), None)
+        if not match:
+            close = difflib.get_close_matches(key, apps.keys(), n=1, cutoff=0.55)
+            match = close[0] if close else None
+        if not match:
+            return f"No installed app matches '{name}'."
+        subprocess.Popen(["open", *g, "-a", apps[match]])
+        return f"Launched '{match}'."
 
     def t_open_url(self, url: str, background: bool = False):
         if not re.match(r"^[a-z]+://", url):
@@ -577,12 +648,16 @@ class ToolBox:
         chrome = find_chrome()
         from .winfront import windows
         before = set(windows())
-        if chrome:  # always Chrome (never Edge), in the user's own signed-in profile
+        if chrome and osutil.IS_MAC:   # always Chrome (never Safari), in the user's own signed-in profile
+            subprocess.Popen(["open", "-na", "Google Chrome", *(["-g"] if background else []), "--args",
+                              f"--profile-directory={chrome_profile(self.cfg)}", url])
+        elif chrome:  # always Chrome (never Edge), in the user's own signed-in profile
             subprocess.Popen([chrome, f"--profile-directory={chrome_profile(self.cfg)}", url],
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+                             **osutil.no_window())
         else:
             webbrowser.open(url)
-        return f"Opened {url} in Chrome." + self._front(before, exe="chrome.exe", background=background)
+        return f"Opened {url} in Chrome." + self._front(
+            before, exe="chrome" if osutil.IS_MAC else "chrome.exe", background=background)
 
     @staticmethod
     def monitors() -> list[dict]:
@@ -606,7 +681,11 @@ class ToolBox:
                 raw = s.grab(mon)
         finally:
             self.hud.hide_for_capture(False)
-        return Image.frombytes("RGB", raw.size, raw.rgb), mon["left"], mon["top"]
+        img = Image.frombytes("RGB", raw.size, raw.rgb)
+        # mss monitor dicts are in points on macOS but the grabbed image is in pixels
+        # (2x on Retina): remember pixels-per-point so image coords map back to the screen.
+        self._backing = (img.width / mon["width"]) if (osutil.IS_MAC and mon["width"]) else 1.0
+        return img, mon["left"], mon["top"]
 
     def t_scan_faces(self, delay_seconds: int):
         import numpy as np
@@ -622,7 +701,8 @@ class ToolBox:
         for i in screens:  # every screen, one at a time (keeps faces full-resolution)
             img, left, top = self._grab(i)
             found = detect_faces(np.asarray(img))
-            boxes += [(x + left, y + top, w, h) for x, y, w, h in found]
+            b = self._backing
+            boxes += [(int(x / b) + left, int(y / b) + top, int(w / b), int(h / b)) for x, y, w, h in found]
             if found:
                 where = describe_positions(found, img.width, img.height)
                 parts.append(where if len(mons) <= 2 else f"screen {i}: {where}")
@@ -655,10 +735,13 @@ class ToolBox:
             monitor = 1
         img, left, top = self._grab(monitor)
         target_w = 1366 if monitor else 2048
-        self.shot_scale = img.width / target_w if img.width > target_w else 1.0
+        points_w = img.width / self._backing   # the screen's width in clickable points
+        px_scale = img.width / target_w if img.width > target_w else 1.0
+        if px_scale != 1.0:
+            img = img.resize((target_w, int(img.height / px_scale)))
+        # screenshot pixel -> screen point (pyautogui / HUD space)
+        self.shot_scale = points_w / img.width
         self.shot_origin = (left, top)
-        if self.shot_scale != 1.0:
-            img = img.resize((target_w, int(img.height / self.shot_scale)))
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=70)
         n = len(mons) - 1
@@ -690,12 +773,15 @@ class ToolBox:
         import pyautogui
         import pyperclip
         pyperclip.copy(text)
-        pyautogui.hotkey("ctrl", "v")
+        pyautogui.hotkey(osutil.PRIMARY_MOD, "v")
 
     def t_press_keys(self, keys: str):
         import pyautogui
         alias = {"win": "winleft", "windows": "winleft", "control": "ctrl", "escape": "esc",
                  "return": "enter", "del": "delete"}
+        if osutil.IS_MAC:
+            alias.update({k: "command" for k in ("win", "windows", "cmd", "super", "meta", "command")})
+            alias.update({"opt": "option", "alt": "option"})
         parts = [alias.get(k.strip().lower(), k.strip().lower()) for k in keys.split("+")]
         x, y = self._caret_or_mouse()
         self._cursor(x, y, "keys: " + "+".join(parts), "keys")
@@ -710,11 +796,17 @@ class ToolBox:
         return "Scrolled."
 
     def t_list_windows(self):
+        if osutil.IS_MAC:
+            from .winfront import _title, windows
+            titles = sorted({_title(h) for h in windows() if _title(h).strip()})
+            return "\n".join(titles[:80])
         import pygetwindow as gw
         titles = sorted({t for t in gw.getAllTitles() if t.strip()})
         return "\n".join(titles[:80])
 
     def t_window_action(self, title: str, action: str):
+        if osutil.IS_MAC:
+            return self._window_action_mac(title, action)
         import pygetwindow as gw
         titles = [t for t in gw.getAllTitles() if t.strip()]
         lower = {t.lower(): t for t in titles}
@@ -738,17 +830,49 @@ class ToolBox:
             getattr(w, action)()
         return f"{action} -> {hit}"
 
+    def _window_action_mac(self, title: str, action: str):
+        from . import macfront
+        from .winfront import _title, arrange, find_window, force_front
+        h = find_window(title)
+        if h is None:
+            return f"No window matching '{title}'."
+        hit = _title(h)
+        if action == "close" and not self._ok(f"Close {hit}?"):
+            return "User declined."
+        try:
+            x, y, w, hh = macfront._info(h)["bounds"]
+            self._cursor(int(x + w / 2), int(y + min(40, hh / 2)), f"{action}: {hit[:24]}", "focus")
+        except Exception:
+            pass
+        if action == "focus":
+            force_front(h)
+        elif action == "maximize":
+            return arrange(hit, "maximize")
+        else:
+            win = macfront._ax_window(h)
+            if win is None:
+                return "I need Accessibility permission to do that (System Settings > Privacy & Security)."
+            if action == "minimize":
+                ok = macfront._ax_set_bool(win, "AXMinimized", True)
+            elif action == "restore":
+                ok = macfront._ax_set_bool(win, "AXMinimized", False)
+                force_front(h)
+            else:   # close: press the window's red button
+                from ApplicationServices import AXUIElementPerformAction
+                btn = macfront._ax_get(win, "AXCloseButton")
+                ok = btn is not None and AXUIElementPerformAction(btn, "AXPress") == 0
+            if not ok:
+                return f"Couldn't {action} {hit}."
+        return f"{action} -> {hit}"
+
     def t_media_control(self, action: str, steps: int):
-        import pyautogui
-        key = {"play_pause": "playpause", "next": "nexttrack", "previous": "prevtrack",
-               "volume_up": "volumeup", "volume_down": "volumedown", "mute": "volumemute"}[action]
         n = max(1, min(steps, 50)) if action.startswith("volume_") else 1
-        pyautogui.press(key, presses=n, interval=0.02)
+        osutil.media_control(action, n)
         return f"{action} x{n}"
 
     def t_system_status(self):
         vm = psutil.virtual_memory()
-        disk = psutil.disk_usage(os.environ.get("SystemDrive", "C:") + "\\")
+        disk = psutil.disk_usage(osutil.SYSTEM_DRIVE)
         bat = psutil.sensors_battery()
         up = dt.timedelta(seconds=int(time.time() - psutil.boot_time()))
         procs = []
@@ -842,13 +966,15 @@ class ToolBox:
         return "Dictation will start after your reply. Tell the user to go ahead."
 
     def t_launch_beamng(self):
+        if osutil.IS_MAC:
+            return "BeamNG.drive isn't available on macOS, I'm afraid; there is no Mac version of the game."
         exe = find_beamng()
         try:
             if exe:
                 subprocess.Popen([str(exe), "-enablemcp"], cwd=str(exe.parent))
                 how = "directly with -enablemcp"
             else:
-                os.startfile("steam://run/284160//-enablemcp/")
+                osutil.open_path("steam://run/284160//-enablemcp/")
                 how = "through Steam with -enablemcp (Steam may ask to confirm the launch option)"
         except Exception as e:
             return f"Couldn't launch BeamNG.drive: {e}"
@@ -1038,7 +1164,7 @@ class ToolBox:
             return False
 
     def t_open_blender(self, background: bool = False):
-        running = any((p.info["name"] or "").lower() == "blender.exe"
+        running = any((p.info["name"] or "").lower().removesuffix(".exe") == "blender"
                       for p in psutil.process_iter(["name"]))
         if running and self.blender_link_up():
             if not background:
@@ -1088,3 +1214,53 @@ def _timer_label(message: str) -> str:
              if w.lower() not in {"the", "your", "a", "an", "is", "are", "time", "to", "for",
                                   "check", "timer", "ready", "done", "sir", "reminder"}]
     return " ".join(words[:2]).upper()[:14] or "TIMER"
+
+
+_MAC_APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications",
+                 "/System/Applications/Utilities", "/System/Cryptexes/App/System/Applications")
+
+
+def _scan_mac_apps() -> dict[str, str]:
+    """Installed apps on macOS: lower-case app name -> path to its .app bundle."""
+    apps: dict[str, str] = {}
+    dirs = [Path(d) for d in _MAC_APP_DIRS] + [Path.home() / "Applications"]
+    for d in dirs:
+        try:
+            for f in sorted(d.iterdir()):
+                if f.suffix == ".app":
+                    apps.setdefault(f.stem.lower(), str(f))
+                elif f.is_dir() and not f.name.startswith("."):   # one level of vendor folders
+                    for g in f.glob("*.app"):
+                        apps.setdefault(g.stem.lower(), str(g))
+        except OSError:
+            continue
+    return apps
+
+
+def _mac_caret() -> tuple[int, int] | None:
+    """Screen position (points) of the text caret in the focused UI element, via Accessibility.
+    None if Accessibility isn't granted or the app doesn't expose it."""
+    try:
+        from ApplicationServices import (AXIsProcessTrusted, AXUIElementCopyAttributeValue,
+                                         AXUIElementCopyParameterizedAttributeValue,
+                                         AXUIElementCreateSystemWide, AXValueGetValue,
+                                         kAXValueCGRectType)
+        if not AXIsProcessTrusted():
+            return None
+        sysw = AXUIElementCreateSystemWide()
+        err, el = AXUIElementCopyAttributeValue(sysw, "AXFocusedUIElement", None)
+        if err or el is None:
+            return None
+        err, rng = AXUIElementCopyAttributeValue(el, "AXSelectedTextRange", None)
+        if err or rng is None:
+            return None
+        err, bounds = AXUIElementCopyParameterizedAttributeValue(el, "AXBoundsForRange", rng, None)
+        if err or bounds is None:
+            return None
+        ok, rect = AXValueGetValue(bounds, kAXValueCGRectType, None)
+        if not ok or (rect.size.width == 0 and rect.size.height == 0 and rect.origin.x == 0):
+            return None
+        return int(rect.origin.x), int(rect.origin.y + rect.size.height)
+    except Exception:
+        log.debug("mac caret lookup failed", exc_info=True)
+        return None

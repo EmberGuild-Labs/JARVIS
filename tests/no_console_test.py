@@ -2,6 +2,9 @@
 that appear meanwhile. Writes the result to tests/no_console_result.txt."""
 import ctypes
 import sys
+
+if sys.platform != "win32":
+    sys.exit("no_console_test is Windows-only (console windows don't pop up on macOS); skipped.")
 import threading
 import time
 from ctypes import wintypes

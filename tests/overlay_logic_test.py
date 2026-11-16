@@ -22,8 +22,23 @@ print("tools:", [t["name"] for t in TOOL_DEFS])
 # --- tray
 import jarvis.__main__ as m
 fake = types.SimpleNamespace(cfg=cfg, trigger=threading.Event(), running=True,
-                             brain=types.SimpleNamespace(reset=lambda: None), toolbox=tb)
-icon = m.make_tray(hud, fake)
+                             brain=types.SimpleNamespace(reset=lambda: None), toolbox=tb,
+                             boot=lambda **k: None, standby=False, set_standby=lambda on: None,
+                             say_async=lambda *a: None, enroll_face=lambda: "")
+if sys.platform == "darwin":   # menu-bar item is built on the Tk main thread
+    holder = {}
+    class _Tray:
+        @property
+        def title(self):
+            it = holder.get("item")
+            return it.button().toolTip() if it else None
+        def stop(self):
+            pass
+    icon = _Tray()
+    on_ready = lambda: holder.__setitem__("item", m.make_menubar(hud, fake))
+else:
+    icon = m.make_tray(hud, fake)
+    on_ready = None
 
 def script():
     try:
@@ -46,5 +61,5 @@ def script():
         icon.stop(); hud.quit()
 
 threading.Thread(target=script, daemon=True).start()
-hud.run()
+hud.run(on_ready)
 print("ERRORS:", errors or "none")

@@ -1,8 +1,11 @@
-# JARVIS: a voice assistant for your PC, powered by Claude Code
+# JARVIS: a voice assistant for your PC or Mac, powered by Claude Code
+
+Runs on **Windows 10/11** and **macOS** (Apple Silicon or Intel). The macOS notes are in [Running on macOS](#running-on-macos).
 
 Say **"Hey Jarvis"** and talk. It checks that the voice is yours, sends your request to Claude,
 and Claude can control the PC: open apps, click and type, read the screen, run PowerShell,
 search the web, set timers, control media, and show info panels on a holographic-style HUD.
+(On a Mac it runs zsh instead of PowerShell.)
 It answers out loud.
 
 ## Everything JARVIS can do
@@ -168,6 +171,82 @@ JARVIS project, make the HUD a bit bigger"*. New projects go in `C:\PROJECTS` (`
 summary and puts details on the HUD. Risky shell commands, and any file change outside `C:\PROJECTS`, need a
 spoken "yes" from your verified voice.
 
+## Running on macOS
+
+The same code runs on macOS. A small platform layer picks the right implementation at runtime, so
+Windows behaviour is unchanged.
+
+### Setup (macOS)
+1. Install Claude Code and sign in (`claude` in a terminal), as on Windows.
+2. You need Python 3.13 with Tk. Homebrew: `brew install python@3.13 python-tk@3.13`; Miniforge's
+   3.13 also works.
+3. From the project folder, run `./setup.sh`. It creates `.venv`, installs everything and downloads the models.
+4. Start it with `.venv/bin/python run.py`. Voice enrollment starts on the first run in a Terminal window,
+   or run it yourself with `.venv/bin/python -m jarvis.enroll` (`... -m jarvis.enroll test` to check it).
+5. Optional: `./autostart.sh` starts JARVIS at login through a LaunchAgent
+   (`~/Library/LaunchAgents/local.jarvis.assistant.plist`). `./autostart.sh --remove` turns it off.
+6. If you use the Claude Code relay, re-run `.venv/bin/python install_claude_hooks.py` on the Mac so the
+   hooks point at the macOS venv.
+
+### Permissions
+macOS asks for each permission the first time JARVIS needs it. Grant it to the app that starts JARVIS:
+Terminal, iTerm or your IDE. With autostart, grant it to the venv's `python` instead. Everything is under
+**System Settings > Privacy & Security**:
+
+| Permission | Needed for |
+|---|---|
+| Microphone | Wake word and voice commands |
+| Camera | Webcam presence, face ID, the sentry |
+| Screen Recording | Screenshots, "look at this", window titles, "watch my screen" |
+| Accessibility | Moving, focusing and closing windows, clicking and typing, the caret-following cursor |
+| Input Monitoring | The global `Ctrl+Option+J` push-to-talk hotkey |
+| Automation | Spotify and Music control, hiding apps for "clear the desk" (asked on first use) |
+
+Without Screen Recording, window titles fall back to app names. Without Accessibility, window commands
+answer with a message telling you to turn it on.
+
+### What's different on a Mac
+
+| Feature | Windows | macOS |
+|---|---|---|
+| Shell tool | PowerShell (`run_shell`) | zsh login shell (`run_shell`), with Unix risky-command checks (`sudo`, `rm -rf`, `diskutil`, `launchctl`...) |
+| Tray icon | System tray (pystray) | Menu-bar item (AppKit), same menu; no Dock icon |
+| HUD | Colour-key transparent, click-through Tk window | `systemTransparent` Tk window made click-through and floating on all Spaces via AppKit |
+| Hotkey | `keyboard` library | `pynput` (needs Input Monitoring) |
+| Windows | Win32 (`jarvis/winfront_win.py`) | Quartz window list + Accessibility API (`jarvis/macfront.py`) |
+| Apps | Start menu apps | `.app` bundles in `/Applications`, `/System/Applications`, `~/Applications` (`open -a`) |
+| Chrome | Your Chrome profile | Same, via `open -na "Google Chrome" --args --profile-directory=...` |
+| Media / volume | Media keys, system media session | Volume via AppleScript, media keys via system events; "what's playing" asks Spotify or Music |
+| Lock / idle | `LockWorkStation`, `GetLastInputInfo` | The system lock-screen call, Quartz idle time |
+| Offline voice | Windows SAPI (pyttsx3) | The built-in `say` command |
+| Diagnostic | PowerShell: drivers, Windows Update | `sw_vers`, chip, `system_profiler` GPU, volumes, `softwareupdate -l`; no drivers row |
+| Power plans in protocols | `powercfg` | Skipped (needs admin on macOS) |
+| GPU temperature alert | `nvidia-smi` | Not available on Macs, skipped quietly |
+| BeamNG.drive | Supported | No macOS build: the BeamNG tools say so and the boot check is skipped |
+| `code_dir` default | `C:\PROJECTS` | `~/PROJECTS` (change it in `config.json`) |
+| Autostart | Registry Run key (`autostart.ps1`) | LaunchAgent (`autostart.sh`) |
+
+### Notes on the port
+- `jarvis/osutil.py` holds everything OS-specific that isn't window management: idle time, locking,
+  the foreground app, the shell, media and volume, opening files, single-instance lock and process priority.
+- `jarvis/winfront.py` is now a dispatcher with one API (`windows`, `find_window`, `force_front`, `arrange`,
+  `monitors`, `front_after_launch`). It loads `winfront_win.py` on Windows and `macfront.py` on macOS.
+  On macOS a window handle is the window server's window number.
+- Screenshots on Retina displays are captured in pixels, but clicks use points. The scale factor is
+  folded into the screenshot-to-screen mapping, so clicks and annotations land in the right place.
+- `run_powershell` was renamed to `run_shell` on both platforms. The prompts tell Claude which OS and
+  shell it's on, and to use `cmd` shortcuts on a Mac.
+- The HUD never takes keyboard focus on macOS. Its windows refuse key status, and if macOS activates
+  JARVIS anyway, focus goes straight back to the app you were using. You can keep typing while it shows things.
+  It only touches the keyboard or mouse when it's actually clicking or typing for you.
+- Only windows on the current Space are visible to JARVIS on macOS. Full-screen browser video doesn't
+  count as a game, so the HUD stays visible.
+- `requirements.txt` uses platform markers: `keyboard`, `pygetwindow` and `winrt` are Windows-only;
+  `pynput` and `pyobjc` are macOS-only.
+- Tested on macOS 27 (Apple M3, Python 3.13): imports and the pure-logic tests, tools (shell, app launch,
+  volume, screenshots), HUD rendering and click-through flags, menu-bar item, window arrange. Not yet
+  tested: a full voice session end to end, multi-monitor moves, and "clear the desk".
+
 ## Using it
 
 | Do this | What happens |
@@ -240,6 +319,8 @@ Logs are in `data/jarvis.log` and long-term memory is in `data/memory.json`.
 ## Layout
 
 ```
+jarvis/osutil.py     OS layer (Windows + macOS): idle, lock, shell, media, foreground app
+jarvis/winfront.py   window management API -> winfront_win.py (Win32) / macfront.py (macOS)
 jarvis/assistant.py  listening loop (wake, verify, transcribe, Claude, speak)
 jarvis/brain.py      Claude tool-use loop and persona
 jarvis/tools.py      PC-control tools

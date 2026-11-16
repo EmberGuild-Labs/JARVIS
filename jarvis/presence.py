@@ -13,28 +13,22 @@ one every few minutes, so it costs nothing until you plug one in.
 """
 from __future__ import annotations
 
-import ctypes
 import logging
 import threading
 import time
-from ctypes import wintypes
+
+from . import osutil
 
 log = logging.getLogger("jarvis")
 
 
 def idle_seconds() -> float:
     """Seconds since the last keyboard/mouse input."""
-    class LASTINPUTINFO(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
-    info = LASTINPUTINFO(cbSize=ctypes.sizeof(LASTINPUTINFO))
-    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
-        return 0.0
-    return (ctypes.windll.kernel32.GetTickCount() - info.dwTime) / 1000.0
+    return osutil.idle_seconds()
 
 
 def pc_locked() -> bool:
-    import psutil
-    return any(p.info["name"] == "LogonUI.exe" for p in psutil.process_iter(["name"]))
+    return osutil.screen_locked()
 
 
 def _frontal(row) -> bool:
@@ -51,7 +45,7 @@ def _frontal(row) -> bool:
 
 
 def lock_pc():
-    ctypes.windll.user32.LockWorkStation()
+    osutil.lock_screen()
 
 
 class Camera:
@@ -63,7 +57,12 @@ class Camera:
 
     def open(self) -> bool:
         import cv2
-        cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
+        backend = cv2.CAP_AVFOUNDATION if osutil.IS_MAC else cv2.CAP_DSHOW
+        try:
+            cap = cv2.VideoCapture(self.index, backend)
+        except Exception:   # no camera / permission denied: fail soft
+            log.debug("camera open failed", exc_info=True)
+            return False
         if not cap.isOpened():
             cap.release()
             return False

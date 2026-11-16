@@ -11,6 +11,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .osutil import default_code_dir
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 MODELS_DIR = ROOT / "models"
@@ -23,7 +25,7 @@ DEFAULTS: dict = {
     "user_name": "sir",
     # Claude
     "backend": "claude_code",     # claude_code = your Claude Code login (no API key) | api = API key
-    "code_dir": "C:\\PROJECTS",   # where JARVIS creates and edits code projects
+    "code_dir": default_code_dir(),   # where JARVIS creates and edits code projects
     "agent_effort": "medium",     # effort for the Claude Code backend (coding benefits from more)
     "model": "claude-opus-5-5",
     "effort": "low",              # low = snappy voice replies; raise for harder tasks

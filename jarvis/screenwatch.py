@@ -20,6 +20,7 @@ import time
 
 import numpy as np
 
+from . import osutil
 from .config import DATA_DIR
 
 log = logging.getLogger("jarvis")
@@ -87,6 +88,10 @@ class ScreenWatcher:
         """App name plus the text inside a window (message boxes and most dialogs keep it in
         child controls), so a dialog hidden behind other windows can still be read."""
         try:
+            if osutil.IS_MAC:   # no child-control text without Accessibility walking: app + title only
+                from .winfront import _exe, _title, find_window
+                h = find_window(title)
+                return f"[{_exe(h).removesuffix('.exe')}] {_title(h)}"[:600] if h else ""
             import ctypes
             from ctypes import wintypes
             from .winfront import _exe, _title, find_window

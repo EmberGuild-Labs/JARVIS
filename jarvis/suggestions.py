@@ -20,6 +20,7 @@ from pathlib import Path
 
 import psutil
 
+from . import osutil
 from .config import DATA_DIR
 
 log = logging.getLogger("jarvis")
@@ -30,14 +31,12 @@ KEEP_DAYS = 30
 def foreground_app() -> tuple[str, str] | None:
     """(friendly name, exe name) of the foreground app if it's a game (Steam) or
     something JARVIS has launched for you before; else None."""
-    import ctypes
-    from ctypes import wintypes
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
-    pid = wintypes.DWORD()
-    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     try:
-        exe = psutil.Process(pid.value).exe()
+        pid = osutil.foreground_pid()
+        exe = psutil.Process(pid).exe() if pid else ""
     except Exception:
+        return None
+    if not exe:
         return None
     p = Path(exe)
     parts = [x.lower() for x in p.parts]
@@ -166,7 +165,7 @@ class SuggestionEngine:
         app = self.habit_for(when)
         if app and not self.running(app) and self.suggested_today.get(app) != today:
             self.suggested_today[app] = today
-            name = app.replace(".exe", "")
+            name = app.replace(".exe", "").replace(".app", "")
             self._offer(f"You usually play {name} around now, {user}. Shall I launch it?",
                         lambda: self.a.toolbox.run("launch_beamng" if "beamng" in app.lower()
                                                    else "open_application",

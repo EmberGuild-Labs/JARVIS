@@ -68,9 +68,11 @@ def summary(text: str, limit: int = 240) -> str:
 
 def project_name(payload: dict) -> str:
     cwd = payload.get("cwd") or ""
-    name = Path(cwd).name if cwd else "a session"
-    if re.fullmatch(r"[0-9a-f]{8,}", name) or "scratchpad" in name.lower():
-        name = Path(cwd).parent.name or name
+    # split on both separators: hooks can report Windows or POSIX paths
+    parts = [p for p in re.split(r"[\\/]+", cwd) if p and not p.endswith(":")]
+    name = parts[-1] if parts else "a session"
+    if (re.fullmatch(r"[0-9a-f]{8,}", name) or "scratchpad" in name.lower()) and len(parts) > 1:
+        name = parts[-2]
     return name
 
 

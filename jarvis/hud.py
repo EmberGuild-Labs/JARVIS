@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import logging
 import math
 import queue
 import textwrap
@@ -14,14 +15,20 @@ import threading
 import time
 import tkinter as tk
 
+from . import osutil
+
+IS_MAC, IS_WIN = osutil.IS_MAC, osutil.IS_WIN
+
 KEY = "#010203"            # transparent colour key
 CYAN = "#3fd8ff"
 CYAN_DIM = "#126a85"
 AMBER = "#ffb347"
 RED = "#ff4d5e"
 WHITE = "#e8fbff"
-FONT = "Segoe UI"
-MONO = "Consolas"
+FONT = "Helvetica Neue" if IS_MAC else "Segoe UI"
+MONO = "Menlo" if IS_MAC else "Consolas"
+TK_SCALING = 1.25 if IS_MAC else None   # Tk point sizes render small on macOS
+BG = "systemTransparent" if IS_MAC else KEY   # canvas/window background that is see-through
 
 W, H = 440, 640
 FX_LEN = {"boot": 2.9, "shutdown": 1.8, "scan": 1.0}   # seconds each full-screen sweep lasts
@@ -43,14 +50,55 @@ _NOT_GAMES = {
     "snippingtool", "mspaint", "figma", "notion", "obsidian", "pythonw", "python",
     "lghub", "nvidia overlay", "systemsettings", "taskmgr", "textinputhost", "unity hub",
     "unity",
+    # macOS app names (osutil.app_name of the owner name)
+    "finder", "safari", "terminal", "iterm2", "iterm", "preview", "notes", "mail", "messages",
+    "music", "textedit", "xcode", "system settings", "system preferences", "activity monitor",
+    "quicktime player", "facetime", "calendar", "pages", "numbers", "keynote", "arc", "ghostty",
+    "warp", "alacritty", "kitty", "wezterm", "dock", "windowserver", "control center",
 }
 _extra_not_games: set[str] = set()   # filled from config "hud_not_games"
+
+
+def _mac_game_in_foreground() -> bool:
+    fg = osutil.foreground_app()
+    if not fg or fg in ("python", "python3", "jarvis"):
+        return False
+    if fg in _NOT_GAMES or fg in _extra_not_games:
+        return False
+    try:
+        import psutil
+        exe = psutil.Process(osutil.foreground_pid()).exe().lower()
+    except Exception:
+        exe = ""
+    if "/steamapps/common/" in exe:
+        return True
+    rect = osutil.foreground_rect()
+    if not rect:
+        return False
+    l, t, r, b = rect
+    try:
+        import mss
+        with mss.MSS() as m:
+            mons = [dict(x) for x in m.monitors[1:]]
+    except Exception:
+        return False
+    for d in mons:
+        ml, mt, mr, mb = d["left"], d["top"], d["left"] + d["width"], d["top"] + d["height"]
+        # centre of the window decides which display it is on
+        if not (ml <= (l + r) // 2 < mr and mt <= (t + b) // 2 < mb):
+            continue
+        # a true full-screen window also covers the menu-bar strip (maximised windows don't)
+        return l <= ml and t <= mt and r >= mr and b >= mb
+    return False
 
 
 def game_in_foreground() -> bool:
     """True when the foreground app is a game: anything installed under Steam's
     steamapps folder, or any window covering its whole monitor (full-screen or
     borderless). The desktop, taskbar and JARVIS's own windows don't count."""
+    if IS_MAC:
+        return _mac_game_in_foreground()
+
     from ctypes import wintypes
     user32 = ctypes.windll.user32
     hwnd = user32.GetForegroundWindow()
@@ -231,14 +279,21 @@ class HUD:
         self.q.put(("image", (path, title, seconds)))
 
     # ----------------------------------------------------------------- Tk side
-    def run(self):
-        """Run on the main thread. Blocks until quit()."""
+    def call_main(self, fn):
+        """Run fn() on the Tk/main thread (needed for AppKit calls on macOS)."""
+        self.q.put(("call", fn))
+
+    def run(self, on_ready=None):
+        """Run on the main thread. Blocks until quit(). on_ready() is called once, on the
+        main thread, after the Tk root exists (used to create the macOS menu-bar item)."""
         self.root = root = tk.Tk()
         root.title("JARVIS HUD")
+        if TK_SCALING:
+            root.tk.call("tk", "scaling", TK_SCALING)
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.configure(bg=KEY)
-        root.attributes("-transparentcolor", KEY)
+        root.configure(bg=BG)
+        self._transparent(root)
         root.attributes("-alpha", 0.94)
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         global H
@@ -250,9 +305,11 @@ class HUD:
         self._text_font = tkfont.Font(root=root, family=FONT, size=10)
         self._panel_font = tkfont.Font(root=root, family=FONT, size=9)
         root.geometry(f"{W}x{H}+{x}+{y}")
-        self.c = tk.Canvas(root, width=W, height=H, bg=KEY, highlightthickness=0)
+        self.c = tk.Canvas(root, width=W, height=H, bg=BG, highlightthickness=0)
         self.c.pack()
         root.update_idletasks()
+        if IS_MAC:
+            self._mac_app_setup()
         self._click_through(root)
 
         # Full-screen layer for face brackets / annotations. Withdrawn (zero cost)
@@ -260,11 +317,12 @@ class HUD:
         self.layer = lay = tk.Toplevel(root)
         lay.overrideredirect(True)
         lay.attributes("-topmost", True)
-        lay.configure(bg=KEY)
-        lay.attributes("-transparentcolor", KEY)
+        lay.title("JARVIS HUD layer")
+        lay.configure(bg=BG)
+        self._transparent(lay)
         vx, vy, vw, vh = self._desktop()
         lay.geometry(f"{vw}x{vh}+{vx}+{vy}")
-        self.lc = tk.Canvas(lay, width=vw, height=vh, bg=KEY, highlightthickness=0)
+        self.lc = tk.Canvas(lay, width=vw, height=vh, bg=BG, highlightthickness=0)
         self.lc.pack()
         lay.update_idletasks()
         self._click_through(lay)
@@ -280,9 +338,115 @@ class HUD:
             self.visible = False
         self._redraw()
         root.after(50, self._pump)
+        if on_ready:
+            def _ready():
+                try:
+                    on_ready()
+                except Exception:
+                    import logging
+                    logging.getLogger("jarvis").exception("HUD on_ready failed")
+            root.after(100, _ready)
         root.mainloop()
 
+    def _transparent(self, win):
+        if IS_MAC:
+            win.attributes("-transparent", True)
+        else:
+            win.attributes("-transparentcolor", KEY)
+
+    def _mac_app_setup(self):
+        """Menu-bar-style app: no Dock icon, and the overlay never takes keyboard focus.
+
+        Tk's windows normally become the key window when shown, which pulls focus away
+        from whatever you're typing in. The HUD is display-only, so its windows refuse
+        key/main status, and if macOS activates JARVIS anyway (Tk does on start-up and
+        on deiconify) focus is handed straight back to the app you were using."""
+        try:
+            import AppKit
+            import objc
+            AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+            tkwin = objc.lookUpClass("TKWindow")
+            if not getattr(HUD, "_mac_patched", False):
+                def canBecomeKeyWindow(self):
+                    return False
+
+                def canBecomeMainWindow(self):
+                    return False
+                objc.classAddMethods(tkwin, [
+                    objc.selector(canBecomeKeyWindow, selector=b"canBecomeKeyWindow", signature=b"Z@:"),
+                    objc.selector(canBecomeMainWindow, selector=b"canBecomeMainWindow", signature=b"Z@:")])
+                HUD._mac_patched = True
+        except Exception:
+            logging.getLogger("jarvis").debug("mac focus patch failed", exc_info=True)
+        self._front_pid = 0
+        self._mac_give_back_focus()
+
+    def _mac_track_front(self):
+        """Remember the last app you used that isn't JARVIS (cheap; runs in the pump)."""
+        try:
+            import AppKit
+            app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+            if app is not None and app.processIdentifier() != os.getpid():
+                self._front_pid = app.processIdentifier()
+        except Exception:
+            pass
+
+    def _mac_give_back_focus(self):
+        """If JARVIS became the active app, re-activate the app you were using."""
+        try:
+            import AppKit
+            if not AppKit.NSApp.isActive():
+                return
+            app = (AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(self._front_pid)
+                   if getattr(self, "_front_pid", 0) else None)
+            if app is not None and not app.isTerminated():
+                app.activateWithOptions_(0)
+            else:
+                AppKit.NSApp.deactivate()
+        except Exception:
+            pass
+
+    def _show(self, win):
+        if IS_MAC:
+            self._mac_track_front()
+        win.deiconify()
+        if IS_MAC:   # Tk may have recreated the NSWindow: re-apply level / click-through
+            win.update_idletasks()
+            self._click_through(win)
+            self._mac_give_back_focus()
+
+    def _mac_windows(self, win=None):
+        """NSWindows of our Tk toplevels (matched by title), or all of them when unmatched."""
+        import AppKit
+        wins = list(AppKit.NSApp.windows())
+        if win is not None:
+            title = win.title()
+            hit = [w for w in wins if str(w.title()) == title]
+            if hit:
+                return hit
+        return [w for w in wins if str(w.title()).startswith("JARVIS HUD")
+                or str(w.className()) == "TKWindow"]
+
     def _click_through(self, win):
+        if IS_MAC:
+            try:
+                import AppKit
+                import Quartz
+                for w in self._mac_windows(win):
+                    w.setIgnoresMouseEvents_(True)
+                    w.setLevel_(Quartz.CGShieldingWindowLevel())   # above full-screen apps / menu bar
+                    w.setCollectionBehavior_(
+                        AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+                        | AppKit.NSWindowCollectionBehaviorStationary
+                        | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+                        | AppKit.NSWindowCollectionBehaviorIgnoresCycle)
+                    w.setHasShadow_(False)
+                    w.setOpaque_(False)
+                    w.setBackgroundColor_(AppKit.NSColor.clearColor())
+                    w.setHidesOnDeactivate_(False)
+            except Exception:
+                pass
+            return
         try:
             hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
             GWL_EXSTYLE = -20
@@ -295,6 +459,9 @@ class HUD:
 
     def _pump(self):
         changed = False
+        if IS_MAC:   # never keep keyboard focus: the HUD is display-only
+            self._mac_give_back_focus()
+            self._mac_track_front()
         try:
             while True:
                 kind, val = self.q.get_nowait()
@@ -325,16 +492,16 @@ class HUD:
                 elif kind == "visible":
                     if val != self.visible:
                         self.visible = val
-                        self.root.deiconify() if val and not self.game_hidden else self.root.withdraw()
+                        self._show(self.root) if val and not self.game_hidden else self.root.withdraw()
                 elif kind == "toggle":
                     self.visible = not self.visible
-                    self.root.deiconify() if self.visible else self.root.withdraw()
+                    self._show(self.root) if self.visible else self.root.withdraw()
                 elif kind == "capture":
                     hide, done = val
                     if self.visible and not self.game_hidden:
-                        self.root.withdraw() if hide else self.root.deiconify()
+                        self.root.withdraw() if hide else self._show(self.root)
                     if self.layer_shown:
-                        self.layer.withdraw() if hide else self.layer.deiconify()
+                        self.layer.withdraw() if hide else self._show(self.layer)
                     self.root.update()
                     done.set()
                 elif kind == "ptr":
@@ -372,6 +539,12 @@ class HUD:
                     self._set_wire(val)
                 elif kind == "image":
                     self._set_image(*val)
+                elif kind == "call":
+                    try:
+                        val()
+                    except Exception:
+                        import logging
+                        logging.getLogger("jarvis").exception("call_main failed")
                 elif kind == "quit":
                     self.root.destroy()
                     return
@@ -601,7 +774,7 @@ class HUD:
                 self.layer.withdraw()
                 self.layer_shown = False
         elif self.visible:
-            self.root.deiconify()
+            self._show(self.root)
 
     def _layer_wanted(self) -> bool:
         if self.game_hidden:
@@ -621,7 +794,7 @@ class HUD:
         """Called from the pump: show/hide the full-screen layer as needed."""
         if self._layer_wanted() and not self.layer_shown:
             self.corners_t0 = time.time()
-            self.layer.deiconify()
+            self._show(self.layer)
             self.layer_shown = True
             self._layer_tick()
 
