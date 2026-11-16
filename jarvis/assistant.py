@@ -78,6 +78,8 @@ class Assistant:
         self.hud = hud
         self.player = Player()
         self.mic = Microphone()
+        if not cfg.get("mic_enabled", True):   # switched off from the menu bar last time
+            self.mic.set_enabled(False)
         self.tts = TextToSpeech(cfg["tts_voice"], cfg["tts_rate"], self.player)
         hud.voice_source = self.player.window   # HUD ring follows JARVIS's voice
         self.stt = SpeechToText(cfg["whisper_model"], cfg["unload_stt_after_idle_min"])
@@ -269,6 +271,30 @@ class Assistant:
             if speak:
                 self.say(f"Back online, {self.cfg['user_name']}.")
         self.rest()
+
+    @property
+    def mic_on(self) -> bool:
+        return self.mic.enabled
+
+    def set_mic(self, on: bool, speak: bool = True):
+        """Switch the microphone on/off (menu bar). Off closes the input stream: no wake
+        word, no push-to-talk, nothing recorded. Saved, so it stays off after a restart."""
+        if on == self.mic.enabled:
+            return
+        from .config import save_setting
+        self.mic.set_enabled(on)
+        self.cfg["mic_enabled"] = on
+        save_setting("mic_enabled", on)
+        log.info("microphone %s", "on" if on else "off")
+        if on:
+            self.hud.panel("Microphone", ["On. Say \"Hey Jarvis\" when you need me."], 5)
+            if speak:
+                self.say_async(f"Microphone on, {self.cfg['user_name']}.")
+        else:
+            self.hud.panel("Microphone", ["Off. I can't hear anything.",
+                                          "Turn it back on from the menu bar."], 6)
+            if speak:
+                self.say_async("Microphone off.")
 
     # ---------------------------------------------------------------- barge-in
     def _watch(self, on_barge):
@@ -623,7 +649,7 @@ class Assistant:
         cli_ok = getattr(self.brain, "cli", True) is not None
         n_sched = len(self.scheduler.tasks)
         checks = [
-            (f"Audio input: {mic}", True),
+            (f"Audio input: {mic}" if self.mic.enabled else "Microphone: switched off", self.mic.enabled),
             ("Wake word engine", True),
             ("Voice authentication" + ("" if self.verifier.enrolled else ": not enrolled"),
              self.verifier.enrolled),
@@ -673,6 +699,17 @@ class Assistant:
     # -------------------------------------------------------------- main loop
     def run(self):
         self.mic.start()
+
+        def mic_check():   # all-zero input = the OS is blocking the mic (macOS privacy)
+            time.sleep(8)
+            if self.mic.enabled:
+                peak = getattr(self.mic, "peak", 0)
+                if peak == 0:
+                    log.warning("microphone is delivering silence - check the Microphone permission "
+                                "(System Settings > Privacy & Security > Microphone)")
+                else:
+                    log.info("microphone ok (peak level %d)", peak)
+        threading.Thread(target=mic_check, daemon=True).start()
         self.verifier.refresh()
         threading.Thread(target=self.stt.warm, daemon=True).start()
         self.boot()
@@ -751,6 +788,14 @@ class Assistant:
                     log.exception("scheduled request failed")
                 self.rest()
 
+            if not self.mic.enabled:
+                if self.trigger.is_set():   # push-to-talk with the mic switched off
+                    self.trigger.clear()
+                    self.hud.panel("Microphone", ["Off. Turn it on from the menu bar first."], 5)
+                    self.say("My microphone is off. You can turn it back on from the menu bar.")
+                    self.rest()
+                time.sleep(0.3)
+                continue
             frame = self.mic.read(timeout=0.5)
             if frame is None:
                 continue

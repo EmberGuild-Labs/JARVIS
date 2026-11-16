@@ -34,7 +34,7 @@ def single_instance() -> bool:
 
 STATE_COLORS = {"idle": (40, 150, 190), "standby": (18, 70, 88), "listening": (63, 216, 255),
                 "thinking": (255, 179, 71), "speaking": (120, 235, 255), "denied": (255, 77, 94),
-                "error": (255, 77, 94)}
+                "error": (255, 77, 94), "micoff": (130, 130, 130)}
 
 
 def _tray_image(state: str, size: int = 64):
@@ -46,7 +46,36 @@ def _tray_image(state: str, size: int = 64):
     for a in (0, 120, 240):
         d.arc((14, 14, 50, 50), a, a + 80, fill=col, width=4)
     d.ellipse((26, 26, 38, 38), fill=col)
+    if state == "micoff":   # slash through the ring: microphone switched off
+        d.line((10, 54, 54, 10), fill=(255, 77, 94, 255), width=7)
     return img if size == 64 else img.resize((size, size), Image.LANCZOS)
+
+
+def _tray_state(hud, assistant) -> str:
+    """What the tray / menu-bar icon shows: mic-off wins over the HUD state."""
+    return "micoff" if not getattr(assistant, "mic_on", True) else hud.state
+
+
+# ------------------------------------------------------------------ start at login (macOS)
+def _autostart_plist():
+    from pathlib import Path
+    return Path.home() / "Library" / "LaunchAgents" / "local.jarvis.assistant.plist"
+
+
+def _autostart_on() -> bool:
+    return _autostart_plist().exists()
+
+
+def _toggle_autostart():
+    """Write/remove the LaunchAgent via autostart.sh. Only registers or unregisters it
+    for the next login (no bootstrap/bootout), so the running copy keeps going."""
+    import subprocess
+    from .config import ROOT
+    args = ["/bin/bash", str(ROOT / "autostart.sh"), "--no-load"]
+    if _autostart_on():
+        args.insert(2, "--remove")
+    p = subprocess.run(args, capture_output=True, text=True, timeout=20)
+    logging.getLogger("jarvis").info("autostart: %s %s", p.stdout.strip(), p.stderr.strip())
 
 
 def _menu_spec(hud, assistant, stop_tray):
@@ -95,8 +124,14 @@ def _menu_spec(hud, assistant, stop_tray):
         (LOG_PATH.parent / "sentry").mkdir(exist_ok=True)
         osutil.open_path(LOG_PATH.parent / "sentry")
 
-    return [
-        dict(title=lambda: f"Status: {hud.state.capitalize()}", cb=None, enabled=False),
+    def toggle_mic():
+        threading.Thread(target=assistant.set_mic, args=(not assistant.mic_on,), daemon=True).start()
+
+    items = [
+        dict(title=lambda: ("Status: Microphone off" if not getattr(assistant, "mic_on", True)
+                            else f"Status: {hud.state.capitalize()}"), cb=None, enabled=False),
+        dict(title="Microphone", cb=toggle_mic, checked=lambda: getattr(assistant, "mic_on", True)),
+        "-",
         dict(title="Talk to JARVIS", cb=assistant.trigger.set, default=True),
         dict(title="Standby", cb=bg(lambda: assistant.set_standby(not assistant.standby)),
              checked=lambda: getattr(assistant, "standby", False)),
@@ -118,8 +153,11 @@ def _menu_spec(hud, assistant, stop_tray):
              checked=lambda: assistant.cfg["require_voice_match"]),
         dict(title="New conversation", cb=lambda: assistant.brain.reset()),
         dict(title="Open log", cb=lambda: osutil.open_path(LOG_PATH)),
-        dict(title="Quit", cb=quit_app),
     ]
+    if osutil.IS_MAC:
+        items.append(dict(title="Start at login", cb=_toggle_autostart, checked=_autostart_on))
+    items += ["-", dict(title="Quit", cb=quit_app)]
+    return items
 
 
 def make_tray(hud, assistant):
@@ -170,7 +208,7 @@ def make_tray(hud, assistant):
     def follow_state():  # recolour the tray icon with JARVIS's state (2 checks/sec)
         last = None
         while True:
-            s = hud.state
+            s = _tray_state(hud, assistant)
             if s != last:
                 try:
                     icon.icon = icons.get(s, icons["idle"])
@@ -235,6 +273,9 @@ def make_menubar(hud, assistant):
         menu.setAutoenablesItems_(False)
         menu.setDelegate_(target)
         for it in spec:
+            if it == "-":
+                menu.addItem_(AppKit.NSMenuItem.separatorItem())
+                continue
             t = it["title"]
             title = t() if callable(t) else t
             nsitem = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
@@ -262,11 +303,11 @@ def make_menubar(hud, assistant):
     state = {"last": None}
 
     def follow_state():
-        s = hud.state
+        s = _tray_state(hud, assistant)
         if s != state["last"]:
             state["last"] = s
             button.setImage_(images.get(s, images["idle"]))
-            button.setToolTip_(f"JARVIS - {s}")
+            button.setToolTip_("JARVIS - microphone off" if s == "micoff" else f"JARVIS - {s}")
 
     def poll():  # main thread, 2 checks/sec
         try:

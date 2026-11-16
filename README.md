@@ -184,7 +184,10 @@ Windows behaviour is unchanged.
 4. Start it with `.venv/bin/python run.py`. Voice enrollment starts on the first run in a Terminal window,
    or run it yourself with `.venv/bin/python -m jarvis.enroll` (`... -m jarvis.enroll test` to check it).
 5. Optional: `./autostart.sh` starts JARVIS at login through a LaunchAgent
-   (`~/Library/LaunchAgents/local.jarvis.assistant.plist`). `./autostart.sh --remove` turns it off.
+   (`~/Library/LaunchAgents/local.jarvis.assistant.plist`) and starts it now. `./autostart.sh --remove`
+   turns it off. You can also use **Start at login** in the menu-bar menu, which takes effect at the next
+   login. The agent gets a full PATH, so it finds your `claude`, Homebrew and node. If JARVIS crashes,
+   it restarts after 30 s; choosing Quit leaves it stopped.
 6. If you use the Claude Code relay, re-run `.venv/bin/python install_claude_hooks.py` on the Mac so the
    hooks point at the macOS venv.
 
@@ -202,8 +205,20 @@ Terminal, iTerm or your IDE. With autostart, grant it to the venv's `python` ins
 | Input Monitoring | The global `Ctrl+Option+J` push-to-talk hotkey |
 | Automation | Spotify and Music control, hiding apps for "clear the desk" (asked on first use) |
 
+With autostart, launchd runs the venv's interpreter directly, so permissions belong to that Python
+binary, not to Terminal. Find its real path with `readlink -f .venv/bin/python` and add it under
+Accessibility and Input Monitoring with the **+** button. Microphone and Camera ask on their own.
+If the mic permission is missing, the log says "microphone is delivering silence".
+
 Without Screen Recording, window titles fall back to app names. Without Accessibility, window commands
 answer with a message telling you to turn it on.
+
+### Microphone switch (menu bar)
+The JARVIS icon in the menu bar has a **Microphone** item at the top. Switching it off closes the mic
+stream completely, so nothing is captured, the orange mic indicator goes out, and the icon turns grey with a
+red slash. It stays off after a restart until you switch it back on (`mic_enabled` in `config.json`).
+While it's off, the push-to-talk hotkey just tells you the mic is off. The switch works on Windows too
+(tray menu).
 
 ### What's different on a Mac
 

@@ -23,13 +23,19 @@ class Microphone:
         self.ring = collections.deque(maxlen=int(preroll_seconds * SAMPLE_RATE / FRAME))
         self.noise_floor = 300.0
         self._muted = threading.Event()
-        self.stream = sd.InputStream(
+        self.enabled = True          # False = mic switched off: the stream is closed
+        self._lock = threading.Lock()
+        self.stream = self._open()
+
+    def _open(self):
+        return sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="int16",
             blocksize=FRAME, callback=self._cb,
         )
 
     def _cb(self, indata, frames, t, status):
         frame = indata[:, 0].copy()
+        self.peak = max(getattr(self, "peak", 0), int(np.abs(frame).max()) if frame.size else 0)
         self.ring.append(frame)
         if self._muted.is_set():
             return
@@ -43,11 +49,34 @@ class Microphone:
             self.q.put_nowait(frame)
 
     def start(self):
-        self.stream.start()
+        with self._lock:
+            if self.enabled and self.stream is not None:
+                self.stream.start()
 
     def stop(self):
-        self.stream.stop()
-        self.stream.close()
+        with self._lock:
+            if self.stream is not None:
+                self.stream.stop()
+                self.stream.close()
+                self.stream = None
+
+    def set_enabled(self, on: bool):
+        """Switch the microphone on or off. Off really closes the input stream, so
+        nothing is captured and the OS mic indicator goes out."""
+        with self._lock:
+            if on == self.enabled:
+                return
+            self.enabled = on
+            if on:
+                self.stream = self._open()
+                self.stream.start()
+            else:
+                if self.stream is not None:
+                    self.stream.stop()
+                    self.stream.close()
+                    self.stream = None
+                self.ring.clear()
+        self.flush()
 
     def mute(self, on: bool):
         """Ignore the mic while JARVIS is speaking so it doesn't hear itself."""
@@ -65,6 +94,9 @@ class Microphone:
                 break
 
     def read(self, timeout: float = 1.0) -> np.ndarray | None:
+        if not self.enabled:
+            time.sleep(timeout)
+            return None
         try:
             return self.q.get(timeout=timeout)
         except queue.Empty:

@@ -440,7 +440,10 @@ class CodeBrain:
                     "Escalation registered. Stop now and don't add anything else."}]}
 
         self.server, self.tool_names = build_mcp_server(toolbox, extra=[escalate])
-        self.cli = shutil.which("claude")
+        self.cli = shutil.which("claude") or next(
+            (str(c) for c in (Path.home() / ".local" / "bin" / "claude",
+                              Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude"))
+             if c.is_file()), None)   # launchd/autostart starts with a bare PATH
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.client: ClaudeSDKClient | None = None
