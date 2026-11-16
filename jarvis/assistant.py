@@ -72,6 +72,16 @@ def enrollment_running() -> bool:
     return running
 
 
+class _SilentStream:
+    """Stands in for a SpeechStream when a reply should only be shown, not spoken."""
+    def feed(self, chunk): pass
+    def flush(self): pass
+    def close(self): pass
+    def wait(self, timeout=None): return True
+    def wait_idle(self, timeout=60): return True
+    def stop(self): pass
+
+
 class Assistant:
     def __init__(self, cfg: dict, hud: HUD):
         self.cfg = cfg
@@ -98,6 +108,7 @@ class Assistant:
         self._speak_lock = threading.RLock()
         self._async_q: queue.Queue[str] = queue.Queue()
         self._request_q: queue.Queue[str] = queue.Queue()
+        self._typed_q: queue.Queue[tuple[str, bool]] = queue.Queue()
         self._offer_q: queue.Queue = queue.Queue()   # proactive yes/no suggestions
         self._listening = False              # pauses the barge-in watcher while recording
         self._watching = False
@@ -469,11 +480,15 @@ class Assistant:
         for msg in held:
             self._async_q.put(msg)
 
-    def respond(self, text: str) -> bool:
-        """Send a request to Claude and speak the reply as it streams in.
-        Returns False if the user interrupted."""
+    def submit_typed(self, text: str, speak: bool = False):
+        """A request typed into the 'Type to JARVIS' bar (handled by the main loop)."""
+        self._typed_q.put((text, speak))
+
+    def respond(self, text: str, speak: bool = True) -> bool:
+        """Send a request to Claude and speak the reply as it streams in (speak=False:
+        the reply is only shown on the HUD). Returns False if the user interrupted."""
         self._barged = False
-        stream = self.tts.stream()
+        stream = self.tts.stream() if speak else _SilentStream()
         self.current_stream = stream
         shown: list[str] = []
         stop_watch = self._watch(lambda: self._barge(stream))
@@ -777,6 +792,22 @@ class Assistant:
                 item = self.relay.q.get()
                 if not item.expired:
                     relay_handle(self, item)
+            while not self._typed_q.empty():    # "Type to JARVIS" requests
+                text, speak = self._typed_q.get()
+                log.info("typed: %s (speak=%s)", text, speak)
+                if self.standby:
+                    self.set_standby(False, speak=speak)
+                self.hud.heard(text)
+                self.hud.set_state("thinking")
+                self._in_session = True
+                try:
+                    self.respond(text, speak=speak)
+                except Exception:
+                    log.exception("typed request failed")
+                    self.hud.set_state("error")
+                    self.hud.say("Something went wrong on my end. Details are in the log.")
+                self._in_session = False
+                self.rest()
             while not self._request_q.empty():  # scheduled "jarvis_request" tasks
                 req = self._request_q.get()
                 self.hud.set_state("thinking")

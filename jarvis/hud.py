@@ -170,6 +170,8 @@ class HUD:
         self.scan: dict | None = None                    # diagnostic readout
         self.wire: dict | None = None                    # rotating wireframe
         self.img: dict | None = None                     # picture panel
+        self.typing_open = False                         # "Type to JARVIS" bar has focus
+        self.typebar = None
 
     def _desktop(self) -> tuple[int, int, int, int]:
         """Virtual desktop spanning every monitor; also records each screen's rectangle."""
@@ -279,6 +281,19 @@ class HUD:
         self.q.put(("image", (path, title, seconds)))
 
     # ----------------------------------------------------------------- Tk side
+    def attach_typebar(self, on_submit):
+        """on_submit(text, speak) receives typed requests from the 'Type to JARVIS' bar."""
+        self._typed_submit = on_submit
+
+    def open_typebar(self):
+        """Open the 'Type to JARVIS' bar (any thread)."""
+        def go():
+            if getattr(self, "typebar", None) is None:
+                from .typebar import TypeBar
+                self.typebar = TypeBar(self, self.cfg, getattr(self, "_typed_submit", lambda t, s: None))
+            self.typebar.open()
+        self.call_main(go)
+
     def call_main(self, fn):
         """Run fn() on the Tk/main thread (needed for AppKit calls on macOS)."""
         self.q.put(("call", fn))
@@ -367,8 +382,10 @@ class HUD:
             AppKit.NSApp.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
             tkwin = objc.lookUpClass("TKWindow")
             if not getattr(HUD, "_mac_patched", False):
+                # Only the "Type to JARVIS" bar may take keyboard focus (while it's open);
+                # every HUD/overlay window stays display-only.
                 def canBecomeKeyWindow(self):
-                    return False
+                    return str(self.title()) == "Type to JARVIS"
 
                 def canBecomeMainWindow(self):
                     return False
@@ -393,6 +410,8 @@ class HUD:
 
     def _mac_give_back_focus(self):
         """If JARVIS became the active app, re-activate the app you were using."""
+        if getattr(self, "typing_open", False):   # the type bar has focus on purpose
+            return
         try:
             import AppKit
             if not AppKit.NSApp.isActive():

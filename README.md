@@ -213,6 +213,20 @@ If the mic permission is missing, the log says "microphone is delivering silence
 Without Screen Recording, window titles fall back to app names. Without Accessibility, window commands
 answer with a message telling you to turn it on.
 
+### Type to JARVIS
+When you can't talk out loud, choose **Type to JARVIS…** in the menu bar (tray on Windows), or press
+`Ctrl+Option+K` (`Ctrl+Alt+K` on Windows; `type_hotkey` in `config.json`). A small bar opens near the
+top of the screen:
+
+- **Enter** sends, **Esc** or clicking another app closes it, and **↑ / ↓** recall earlier requests.
+- Replies show on the HUD without speaking. Click **Speak reply** or press `⌘S` / `Ctrl+S` to have
+  them spoken as well. The choice is saved as `typed_reply_voice`.
+- It works with the microphone switched off.
+- The bar is the only JARVIS window that takes keyboard focus, and only while it's open. When you
+  send or close it, focus goes back to the app you were in.
+- Typed requests get the same tools as spoken ones. Risky actions still need your spoken, voice-checked
+  "yes", so typing can't get past the voice lock; with the mic off they're declined.
+
 ### Microphone switch (menu bar)
 The JARVIS icon in the menu bar has a **Microphone** item at the top. Switching it off closes the mic
 stream completely, so nothing is captured, the orange mic indicator goes out, and the icon turns grey with a
@@ -269,6 +283,7 @@ While it's off, the push-to-talk hotkey just tells you the mic is off. The switc
 | "Hey Jarvis" ... pause ... request | Chime, then it listens, verifies your voice and acts |
 | Keep talking after it replies | Follow-up window (6 s) with no wake word needed |
 | `Ctrl+Alt+J` | Push-to-talk (your voice is still checked) |
+| `Ctrl+Alt+K` (`Ctrl+Option+K` on a Mac) | Type to JARVIS instead of talking |
 | "stop" / "thanks" | Ends the conversation |
 | Tray icon (ring by the clock) | Changes colour with state (blue = standby, cyan = listening, amber = thinking, red = voice rejected). Menu: talk, show/hide HUD, scan for faces, screen corners mode, show memory, voice lock, new conversation, log, quit |
 

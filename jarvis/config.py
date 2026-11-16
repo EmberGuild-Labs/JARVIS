@@ -41,6 +41,8 @@ DEFAULTS: dict = {
     # Wake word (openWakeWord "hey jarvis" model)
     "wake_threshold": 0.5,
     "hotkey": "ctrl+alt+j",       # push-to-talk (skips wake word, still verifies voice)
+    "type_hotkey": "ctrl+alt+k",  # opens the "Type to JARVIS" bar
+    "typed_reply_voice": False,   # typed requests: speak the reply too (else HUD only)
     # Speaker verification
     "speaker_threshold": 0.55,    # cosine similarity needed to accept your voice
     "wake_voice_check": True,     # only your voice can wake JARVIS ("Hey Jarvis")

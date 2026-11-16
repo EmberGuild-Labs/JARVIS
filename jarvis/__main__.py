@@ -133,6 +133,7 @@ def _menu_spec(hud, assistant, stop_tray):
         dict(title="Microphone", cb=toggle_mic, checked=lambda: getattr(assistant, "mic_on", True)),
         "-",
         dict(title="Talk to JARVIS", cb=assistant.trigger.set, default=True),
+        dict(title="Type to JARVIS…", cb=hud.open_typebar),
         dict(title="Standby", cb=bg(lambda: assistant.set_standby(not assistant.standby)),
              checked=lambda: getattr(assistant, "standby", False)),
         dict(title="Show / hide HUD", cb=hud.toggle),
@@ -331,8 +332,10 @@ def _pynput_hotkey(spec: str) -> str:
     return "+".join(parts)
 
 
-def start_hotkey(cfg, callback):
+def start_hotkey(cfg, callback, extra: dict | None = None):
+    """Global hotkeys: cfg["hotkey"] -> callback, plus {spec: callback} in extra."""
     log = logging.getLogger("jarvis")
+    binds = {cfg["hotkey"]: callback, **{k: v for k, v in (extra or {}).items() if k}}
     if osutil.IS_MAC:
         try:
             import Quartz
@@ -340,7 +343,7 @@ def start_hotkey(cfg, callback):
                 log.warning("global hotkey needs Input Monitoring permission "
                             "(System Settings > Privacy & Security > Input Monitoring)")
             from pynput import keyboard as pk
-            listener = pk.GlobalHotKeys({_pynput_hotkey(cfg["hotkey"]): callback})
+            listener = pk.GlobalHotKeys({_pynput_hotkey(k): v for k, v in binds.items()})
             listener.daemon = True
             listener.start()
             return listener
@@ -349,7 +352,8 @@ def start_hotkey(cfg, callback):
         return None
     try:
         import keyboard
-        keyboard.add_hotkey(cfg["hotkey"], callback)
+        for k, v in binds.items():
+            keyboard.add_hotkey(k, v)
     except Exception as e:
         log.warning("hotkey unavailable: %s", e)
     return None
@@ -380,7 +384,8 @@ def main():
     from .assistant import Assistant
     assistant = Assistant(cfg, hud)
 
-    start_hotkey(cfg, assistant.trigger.set)
+    hud.attach_typebar(assistant.submit_typed)
+    start_hotkey(cfg, assistant.trigger.set, {cfg.get("type_hotkey", ""): hud.open_typebar})
 
     if osutil.IS_MAC:
         on_ready = lambda: make_menubar(hud, assistant)   # needs the Tk root / NSApp on the main thread
