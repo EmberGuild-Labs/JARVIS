@@ -357,8 +357,13 @@ def start_hotkey(cfg, callback, extra: dict | None = None):
     if osutil.IS_MAC:
         try:
             import AppKit
-            from ApplicationServices import AXIsProcessTrusted
+            from ApplicationServices import (AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
+                                             kAXTrustedCheckOptionPrompt)
             if not AXIsProcessTrusted():
+                if cfg.get("ask_accessibility", True):
+                    # macOS shows its own "would like to control this computer" dialog with an
+                    # Open System Settings button, and adds this Python to the Accessibility list.
+                    AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
                 log.warning("global hotkeys need Accessibility permission "
                             "(System Settings > Privacy & Security > Accessibility)")
             table = {}
